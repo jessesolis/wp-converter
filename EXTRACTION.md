@@ -1,0 +1,227 @@
+# EXTRACTION.md — Crawler and DOM Extraction Rules
+
+This is the most critical document for the backend pipeline. Read this before touching anything related to crawling or DOM parsing.
+
+---
+
+## Step 0 — `/wp-converter/` Ingestion (Before Any Crawling)
+
+This is always the first thing the tool does. No crawling begins until this succeeds.
+
+```
+GET {site_url}/wp-converter/
+```
+
+Parse the response HTML with Cheerio:
+
+### `#SiteMapListTable` → Page list
+```
+- Skip the first row (header)
+- For each subsequent row:
+    col[0] → page.path      (e.g. "/about")
+    col[1] → page.title     (e.g. "About Us")
+    col[2] → page.metaTitle
+    col[3] → page.metaDescription
+    constructed → page.canonical = site_url + page.path
+```
+
+### `#SiteContentIdsTable` → Content zone ID set
+```
+- Skip the first row (header)
+- For each subsequent row:
+    col[0] → content zone ID string (e.g. "main-content")
+- Store as a Set for O(1) lookup during DOM parsing
+```
+
+### Failure behaviour
+If `/wp-converter/` is unreachable, returns a non-200 status, or either table is missing:
+- Fail the job immediately
+- Surface a clear error to the user — do not proceed with crawling
+- Log the failure with the site URL and HTTP status
+
+---
+
+## Step 1 — Crawling (Puppeteer)
+
+Crawl every page URL from `#SiteMapListTable`. Every page gets the same treatment — no template grouping, no two-pass strategy.
+
+### Crawl behaviour
+- Use Puppeteer in **headless mode**
+- Wait for `networkidle2` before capturing — ensures JS-rendered content and async stylesheet loads are complete
+- Capture **fully rendered HTML** via `page.content()` after JS execution — not the raw HTTP response
+- Set a timeout of **30 seconds** per page
+- Do not follow links — the page list from `/wp-converter/` is the complete and authoritative source of URLs to crawl
+- Do not crawl `/wp-converter/` itself as a site page
+
+### What to capture per page
+- Full rendered HTML (post-JS execution)
+- All `<link rel="stylesheet" href="...">` values in `<head>`
+- All `<script src="...">` values for Scorpion-hosted JS files
+- All image `src` and `srcset` values
+- The `<nav>` element and its full inner HTML
+
+### Per-page error handling
+| Scenario | Behaviour |
+|---|---|
+| Page load timeout (>30s) | Skip page, log warning, flag in review wizard |
+| Page returns non-200 | Skip page, log warning, flag in review wizard |
+| No content zones found on page | Log info — not an error, page may be fully static |
+| `<nav>` element not found | Log warning — navigation will be incomplete for this page |
+
+Do not fail the entire job for individual page failures. Continue crawling remaining pages.
+
+---
+
+## Step 2 — Stylesheet Discovery
+
+After crawling all pages, build a **deduplicated list** of all unique stylesheet URLs discovered across all pages.
+
+**Rules:**
+- Include only `<link rel="stylesheet" href="...">` tags from `<head>`
+- Deduplicate by full URL — same URL appearing on multiple pages is downloaded once
+- Exclude third-party stylesheet URLs (anything not on the Scorpion site's domain)
+- Exception: do NOT attempt to separately download Google Fonts — they are already embedded via `@import` inside Scorpion's compiled stylesheets and travel with them automatically
+- Download each stylesheet as-is — **do not modify, minify, or refactor CSS content**
+- Preserve original filenames where possible
+
+---
+
+## Step 3 — JavaScript Discovery
+
+Same approach as stylesheets.
+
+**Rules:**
+- Include only `<script src="...">` tags — not inline `<script>` blocks
+- Deduplicate by full URL
+- Include only JS files hosted on the Scorpion site's domain — exclude third-party JS (analytics, chat widgets, tag managers, etc.)
+- Download as-is — do not modify
+- Enqueue in WordPress footer (`$in_footer = true`) to match Scorpion's loading behaviour
+
+> **Flag for implementation review:** Inline `<script>` blocks may contain Scorpion utility initialisation code (e.g. passing config options to a slider). Assess during implementation whether these need to be captured and carried over, and how.
+
+---
+
+## Step 4 — Content Zone Extraction (Cheerio)
+
+This is the core content extraction step. Run against every crawled page.
+
+```
+Load rendered page HTML into Cheerio
+
+For each element in the DOM that has an id attribute:
+  If element.id exists in the content zone ID Set:
+    1. Extract element.innerHTML (inner HTML only — not the wrapper element)
+    2. Store: { pageUrl, zoneId: element.id, index, innerHtml }
+    3. Replace element in the template with:
+       <!-- WP_CLASSIC_BLOCK_{index} -->
+
+All remaining HTML (outside replaced zones) = static page template
+```
+
+**Rules:**
+- Content zone IDs from `#SiteContentIdsTable` are the **sole signal** for editable content
+- No class-based detection — `.cnt-stl` or any other class is NOT used
+- Extract **inner HTML only** — do not include the wrapper element's opening/closing tags
+- Preserve inner HTML **exactly as-is** — no tag stripping, attribute modification, or whitespace changes
+- If the same content zone ID appears more than once on a page (unexpected but possible) — extract all instances, index them separately
+- Content zones are not nested — treat every match as independent
+
+---
+
+## Step 5 — Navigation Extraction (Cheerio)
+
+Run against every crawled page. Navigation can vary per page — this must be detected.
+
+```
+For each crawled page:
+  1. Find the primary <nav> element
+     - Use the first <nav> found, or the one with the most <a> children if multiple exist
+  2. Extract all <a> elements within it: { href, text }
+  3. Infer hierarchy from ul > li > ul nesting depth
+  4. Normalise hrefs — convert absolute URLs to root-relative paths
+  5. Store nav structure keyed to page URL
+
+After all pages processed:
+  1. Serialise each page's nav structure to a comparable string
+  2. If all pages produce identical nav → single nav, use globally
+  3. If variations exist → collect unique nav variants, flag in review wizard
+     → user selects which becomes the WordPress primary menu
+```
+
+---
+
+## Step 6 — Media Asset Extraction (Cheerio)
+
+Run against every crawled page.
+
+**Sources to check:**
+- `<img src="...">` and `<img srcset="...">`
+- `<source src="...">` and `<source srcset="...">` (within `<picture>` or `<video>`)
+- `<a href="...">` linking to downloadable files (`.pdf`, `.doc`, `.docx`, `.zip`, etc.)
+- Inline `style` attributes containing `background-image: url(...)`
+
+**Rules:**
+- Deduplicate by full URL across all pages
+- Exclude external media (anything not on the Scorpion site's domain)
+- Download to: `/tmp/scorpion-conversions/{job_id}/media/`
+- Preserve original filenames — use a flat directory structure
+- If filename collision: append a numeric suffix (e.g. `hero-1.jpg`, `hero-2.jpg`)
+- After download, rewrite all references in page template HTML and Classic block inner HTML:
+  - From: `https://scorpion-site.com/assets/images/hero.jpg`
+  - To: `/wp-content/uploads/scorpion-migration/hero.jpg`
+- Also rewrite any `url()` references in extracted stylesheets that point to site-hosted assets
+
+**Per-asset error handling:**
+- If a media asset download fails: log warning, flag in review wizard — do not fail the job
+- Include a list of failed media downloads in the export migration checklist
+
+---
+
+## Step 7 — Form Extraction (Cheerio)
+
+Run against every crawled page.
+
+```
+For each <form> element:
+  1. Extract action and method attributes
+  2. Extract all <input>, <select>, <textarea> elements:
+     - name, type, placeholder, required attributes
+     - associated <label> text (matched by for/id or parent wrapping)
+  3. Store form structure keyed to page URL
+```
+
+---
+
+## Legacy Framework Detection
+
+Run before `/wp-converter/` ingestion as a lightweight pre-check.
+
+```
+1. Simple HTTP GET to the site homepage (no Puppeteer)
+2. Check for known USC version identifiers in:
+   - HTML comments
+   - <meta> tags
+   - CSS/JS filenames in <link> and <script> tags
+   - Body class names
+3. If no USC identifier found:
+   - Return UNSUPPORTED_FRAMEWORK error to frontend
+   - Do not proceed with /wp-converter/ request or crawl
+   - Log the site URL for analysis
+```
+
+---
+
+## Temp Directory Structure
+
+```
+/tmp/scorpion-conversions/
+  {job_id}/
+    stylesheets/     ← downloaded CSS bundles (as-is)
+    js/              ← downloaded JS utility files (as-is)
+    media/           ← downloaded images and files
+    html/            ← captured rendered HTML per page URL
+    output/          ← assembled WordPress package pre-zip
+    export.zip       ← final deliverable
+```
+
+Entire `{job_id}/` directory is deleted immediately after export `.zip` is delivered to the user.
