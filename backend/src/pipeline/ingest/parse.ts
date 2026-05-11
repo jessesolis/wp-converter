@@ -37,6 +37,7 @@ function parseSiteMapTable(
 
     const path = cells.eq(0).text().trim();
     if (!path) return;
+    if (isWpConverterPath(path)) return;
 
     pages.push({
       path,
@@ -48,6 +49,12 @@ function parseSiteMapTable(
   });
 
   return pages;
+}
+
+// Per EXTRACTION.md Step 1: the /wp-converter/ endpoint must not be
+// crawled as a site page even though it appears in #SiteMapListTable.
+function isWpConverterPath(path: string): boolean {
+  return path.replace(/\/$/, "").toLowerCase() === "/wp-converter";
 }
 
 function parseContentIdsTable(
