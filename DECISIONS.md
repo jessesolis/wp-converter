@@ -17,9 +17,9 @@ A record of significant decisions made during the planning phase and the reasoni
 
 ---
 
-## USC/Make/Model selection: Removed entirely
+## Make/Model selection: Removed entirely
 
-**Decision:** The tool does not ask users to select their USC version, Make, or Model. USC version and site title are user-entered informational fields only.
+**Decision:** The tool does not ask users to select their Make or Model. USC version is captured separately (see below) but Make/Model are dropped entirely from the user flow.
 
 **Rejected:** A wizard step for framework/model selection with a visual picker and admin config system.
 
@@ -27,6 +27,24 @@ A record of significant decisions made during the planning phase and the reasoni
 - With fully dynamic extraction the framework hierarchy is no longer load-bearing for styling — all styles come from the live site regardless of framework
 - Scorpion supplies the JS utilities directly, eliminating the need for per-version plugin mapping
 - Removing this eliminates the admin config system, the model library, and associated maintenance burden entirely
+
+---
+
+## USC version input: Constrained dropdown vs free text
+
+**Decision:** USC version is selected at job start from a fixed dropdown — currently **USC 3.0**, **USC 4.0**, **USC 4.2**. Pre-USC 3.0 sites are explicitly unsupported. The supported set lives in `backend/src/config/usc-versions.ts` as the single source of truth.
+
+**Rejected:** Free-text USC version input.
+
+**Rejected:** Detecting the USC version automatically from the crawled site.
+
+**Why:**
+- The USC version is not reliably distinguishable from rendered page markup — there is no consistent signal in CSS/JS bundle names, meta tags, or DOM structure that maps cleanly to a specific version. Asking the user is the only practical way to capture it accurately.
+- Free text invites typos and unsupported values; a dropdown removes that whole class of error.
+- Pre-USC 3.0 variants differ structurally enough that conversion is not viable today. The dropdown enforces the supported floor by not offering older versions.
+- The legacy framework pre-check still runs — it confirms the site is USC (any version) vs non-USC, but does not attempt to identify the specific version.
+
+This supersedes the prior stance that "USC version is informational only" — it is now a constrained input that the rest of the pipeline can trust.
 
 ---
 

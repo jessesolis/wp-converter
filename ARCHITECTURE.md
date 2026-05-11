@@ -46,7 +46,7 @@
 | Content zone IDs | `{site_url}/wp-converter/` `#SiteContentIdsTable` | Cheerio parse |
 | Canonical URLs | Constructed: `site_url + path` | — |
 | Site title | User entered at job start | — |
-| USC version | User entered at job start (informational) | — |
+| USC version | User-selected at job start from a constrained dropdown: USC 3.0, USC 4.0, or USC 4.2 | — |
 | Stylesheets | Crawled from every page `<head>` | Puppeteer + Cheerio |
 | JS utilities | Crawled from every page | Puppeteer + Cheerio |
 | Navigation | Crawled from every page `<nav>` | Puppeteer + Cheerio |
@@ -165,7 +165,7 @@ jobs
   status        enum('queued','framework_check','ingest','crawl','parse','download','build','ready','failed')
   site_url      text NOT NULL
   site_title    text
-  usc_version   text
+  usc_version   text          -- one of: 'USC 3.0', 'USC 4.0', 'USC 4.2' (see backend/src/config/usc-versions.ts)
   created_at    timestamp DEFAULT now()
   completed_at  timestamp
   error         text          -- null unless failed

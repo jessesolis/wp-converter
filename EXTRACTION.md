@@ -196,18 +196,22 @@ For each <form> element:
 
 Run before `/wp-converter/` ingestion as a lightweight pre-check.
 
+The goal of this check is to confirm the site is a USC-based Scorpion site at all — **not** to identify the specific USC version. The USC version is supplied by the user at job start via a constrained dropdown (USC 3.0, USC 4.0, or USC 4.2) and is not reliably distinguishable from rendered page markup.
+
 ```
 1. Simple HTTP GET to the site homepage (no Puppeteer)
-2. Check for known USC version identifiers in:
+2. Check for USC framework markers (any version) in:
    - HTML comments
    - <meta> tags
    - CSS/JS filenames in <link> and <script> tags
    - Body class names
-3. If no USC identifier found:
+3. If no USC marker found:
    - Return UNSUPPORTED_FRAMEWORK error to frontend
    - Do not proceed with /wp-converter/ request or crawl
    - Log the site URL for analysis
 ```
+
+Pre-USC 3.0 sites are not supported. The supported version floor is enforced by the dropdown — older variants are simply not selectable. There is no in-crawler check that rejects a pre-3.0 site after the fact; if a user converts one, the extraction output will be unreliable.
 
 ---
 

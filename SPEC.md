@@ -93,7 +93,7 @@ Content zone IDs are **site-specific** — they vary from site to site and are a
 
 ### User-entered values (at job start)
 - **Site title** — used in the WordPress theme and WXR metadata
-- **USC version** — informational only, stored in job record for logging purposes
+- **USC version** — selected from a constrained dropdown: **USC 3.0**, **USC 4.0**, or **USC 4.2**. Stored in the job record for logging/metadata purposes. The tool does not attempt to detect the USC version from the live site — it is not reliably distinguishable from rendered page markup. Sites running pre-USC 3.0 frameworks are not supported.
 
 ---
 
@@ -186,7 +186,7 @@ No external storage service. Local temp is sufficient — media is only needed t
 Before crawling begins the user provides:
 - Scorpion site URL
 - Site title
-- USC version (informational)
+- USC version — dropdown: **USC 3.0**, **USC 4.0**, or **USC 4.2** (pre-USC 3.0 not supported)
 
 ### 5.3 Conversion flow
 
@@ -226,7 +226,8 @@ Optional for technical users: direct push to WordPress install via WP REST API.
 
 | Item | Reason deferred |
 |---|---|
-| Legacy framework support | Detect and reject cleanly — different extraction logic needed |
+| Legacy framework support | Non-USC frameworks — detect and reject cleanly. Different extraction logic needed. |
+| Pre-USC 3.0 framework sites | USC variants older than 3.0 differ structurally from 3.0+. The version dropdown floor is USC 3.0. |
 | USC/Make/Model selection UI | Not needed with fully dynamic extraction |
 | Admin config system | No framework library to maintain |
 | Pre-built WordPress theme library | Replaced by dynamic extraction |
