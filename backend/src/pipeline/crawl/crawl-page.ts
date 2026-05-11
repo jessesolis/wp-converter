@@ -8,6 +8,7 @@ interface InPageExtraction {
   stylesheetUrls: string[];
   scriptUrls: string[];
   imageUrls: string[];
+  inlineStyles: string[];
   navHtml: string | null;
 }
 
@@ -59,6 +60,7 @@ export async function crawlPage(
       stylesheetUrls: extracted.stylesheetUrls,
       scriptUrls: extracted.scriptUrls,
       imageUrls: extracted.imageUrls,
+      inlineStyles: extracted.inlineStyles,
       navHtml: extracted.navHtml,
     };
   } catch (err) {
@@ -78,13 +80,21 @@ export async function crawlPage(
 // Runs inside the browser page context — must be self-contained.
 // `document`, `HTMLLinkElement`, etc. resolve in the browser, not in Node.
 function extractInPage(): InPageExtraction {
+  // Match <link rel="stylesheet"> anywhere in the document — Scorpion's
+  // main CSS bundle is rendered into <body>, not <head>.
   const stylesheetUrls = Array.from(
-    document.querySelectorAll('head link[rel="stylesheet"][href]'),
+    document.querySelectorAll('link[rel="stylesheet"][href]'),
   ).map((el) => (el as HTMLLinkElement).href);
 
   const scriptUrls = Array.from(
     document.querySelectorAll("script[src]"),
   ).map((el) => (el as HTMLScriptElement).src);
+
+  const inlineStyles: string[] = [];
+  document.querySelectorAll("style").forEach((style) => {
+    const content = style.textContent ?? "";
+    if (content.length > 0) inlineStyles.push(content);
+  });
 
   const imageUrls: string[] = [];
   document.querySelectorAll("img").forEach((img) => {
@@ -112,6 +122,7 @@ function extractInPage(): InPageExtraction {
     stylesheetUrls,
     scriptUrls,
     imageUrls,
+    inlineStyles,
     navHtml: primaryNav ? primaryNav.innerHTML : null,
   };
 }

@@ -15,6 +15,7 @@ export interface CrawledPage {
   stylesheetUrls?: string[];
   scriptUrls?: string[];
   imageUrls?: string[];
+  inlineStyles?: string[];
   navHtml?: string | null;
 }
 

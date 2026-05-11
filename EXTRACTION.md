@@ -55,10 +55,13 @@ Crawl every page URL from `#SiteMapListTable`. Every page gets the same treatmen
 
 ### What to capture per page
 - Full rendered HTML (post-JS execution)
-- All `<link rel="stylesheet" href="...">` values in `<head>`
-- All `<script src="...">` values for Scorpion-hosted JS files
+- All `<link rel="stylesheet" href="...">` values **anywhere in the document** — real Scorpion sites render the main CSS bundle into `<body>`, not `<head>`
+- All `<style>` tag text content — Scorpion sites inject 30–50 KB of per-site theme tokens (CSS custom properties for colours, spacing, typography) inline; a link-only capture path misses this and breaks visual accuracy
+- All `<script src="...">` values anywhere in the document
 - All image `src` and `srcset` values
 - The `<nav>` element and its full inner HTML
+
+> Hostname filtering happens in the parse stage, not the crawl stage. The crawler captures every matching URL; the parser decides what's same-origin and what's third-party.
 
 ### Per-page error handling
 | Scenario | Behaviour |
@@ -74,11 +77,12 @@ Do not fail the entire job for individual page failures. Continue crawling remai
 
 ## Step 2 — Stylesheet Discovery
 
-After crawling all pages, build a **deduplicated list** of all unique stylesheet URLs discovered across all pages.
+After crawling all pages, build a **deduplicated list** of all unique stylesheet URLs and inline `<style>` blocks discovered across all pages.
 
 **Rules:**
-- Include only `<link rel="stylesheet" href="...">` tags from `<head>`
-- Deduplicate by full URL — same URL appearing on multiple pages is downloaded once
+- Match `<link rel="stylesheet" href="...">` anywhere in the document — Scorpion's main CSS bundle (`/cms/includes/{hex}.{timestamp}.css`) typically renders into `<body>`, not `<head>`
+- Capture every `<style>` tag's text content — Scorpion injects 30–50 KB of per-site theme tokens (CSS custom properties) inline, which a link-only path would miss
+- Deduplicate URLs by full URL; deduplicate inline blocks by exact text content
 - Exclude third-party stylesheet URLs (anything not on the Scorpion site's domain)
 - Exception: do NOT attempt to separately download Google Fonts — they are already embedded via `@import` inside Scorpion's compiled stylesheets and travel with them automatically
 - Download each stylesheet as-is — **do not modify, minify, or refactor CSS content**
@@ -91,11 +95,13 @@ After crawling all pages, build a **deduplicated list** of all unique stylesheet
 Same approach as stylesheets.
 
 **Rules:**
-- Include only `<script src="...">` tags — not inline `<script>` blocks
+- Include `<script src="...">` tags anywhere in the document — not inline `<script>` blocks
 - Deduplicate by full URL
 - Include only JS files hosted on the Scorpion site's domain — exclude third-party JS (analytics, chat widgets, tag managers, etc.)
 - Download as-is — do not modify
 - Enqueue in WordPress footer (`$in_footer = true`) to match Scorpion's loading behaviour
+
+> Scorpion-controlled sibling domains (e.g. `sc-connect.scorpion.co`, `api.scorpion.co`) are dropped by the strict same-host filter today. The review wizard will eventually surface the excluded list so a user can opt these back in per script.
 
 > **Flag for implementation review:** Inline `<script>` blocks may contain Scorpion utility initialisation code (e.g. passing config options to a slider). Assess during implementation whether these need to be captured and carried over, and how.
 

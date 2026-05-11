@@ -1,6 +1,6 @@
 import { ingestWpConverter } from "../pipeline/ingest";
 import { crawlSite } from "../pipeline/crawl";
-import { extractAllContentZones } from "../pipeline/parse";
+import { collectAssets, extractAllContentZones } from "../pipeline/parse";
 
 async function main() {
   const siteUrl = process.argv[2];
@@ -98,6 +98,50 @@ async function main() {
       }
       const templateBytes = firstWithZones.template.length;
       console.log(`  template after placeholder replacement: ${templateBytes.toLocaleString()} bytes`);
+    }
+
+    const assets = collectAssets(crawl);
+    const inlineStyleBytes = assets.inlineStyles.reduce(
+      (n, s) => n + s.length,
+      0,
+    );
+    console.log("\nAsset inventory:");
+    console.log(`  site hostname:      ${assets.siteHostname}`);
+    console.log(`  stylesheets (same): ${assets.stylesheets.length}`);
+    console.log(`  scripts (same):     ${assets.scripts.length}`);
+    console.log(
+      `  inline <style>:     ${assets.inlineStyles.length} unique blocks (${inlineStyleBytes.toLocaleString()} bytes)`,
+    );
+    console.log(`  stylesheets (3rd):  ${assets.excludedStylesheets.length}`);
+    console.log(`  scripts (3rd):      ${assets.excludedScripts.length}`);
+
+    if (assets.stylesheets.length > 0) {
+      console.log(`\n  Same-origin stylesheets:`);
+      for (const url of assets.stylesheets.slice(0, 15)) console.log(`    ${url}`);
+      if (assets.stylesheets.length > 15) {
+        console.log(`    …and ${assets.stylesheets.length - 15} more`);
+      }
+    }
+    if (assets.scripts.length > 0) {
+      console.log(`\n  Same-origin scripts:`);
+      for (const url of assets.scripts.slice(0, 15)) console.log(`    ${url}`);
+      if (assets.scripts.length > 15) {
+        console.log(`    …and ${assets.scripts.length - 15} more`);
+      }
+    }
+    if (assets.excludedStylesheets.length > 0) {
+      console.log(`\n  Third-party stylesheets (excluded):`);
+      for (const url of assets.excludedStylesheets.slice(0, 10)) console.log(`    ${url}`);
+      if (assets.excludedStylesheets.length > 10) {
+        console.log(`    …and ${assets.excludedStylesheets.length - 10} more`);
+      }
+    }
+    if (assets.excludedScripts.length > 0) {
+      console.log(`\n  Third-party scripts (excluded):`);
+      for (const url of assets.excludedScripts.slice(0, 10)) console.log(`    ${url}`);
+      if (assets.excludedScripts.length > 10) {
+        console.log(`    …and ${assets.excludedScripts.length - 10} more`);
+      }
     }
   } catch (err) {
     console.error("Extract failed:", err instanceof Error ? err.message : err);
