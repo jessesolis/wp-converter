@@ -1,0 +1,108 @@
+import { ingestWpConverter } from "../pipeline/ingest";
+import { crawlSite } from "../pipeline/crawl";
+import { extractAllContentZones } from "../pipeline/parse";
+
+async function main() {
+  const siteUrl = process.argv[2];
+  if (!siteUrl) {
+    console.error("Usage: tsx src/scripts/run-extract.ts <site_url>");
+    process.exit(1);
+  }
+
+  try {
+    console.log(`Ingesting ${siteUrl}…`);
+    const ingest = await ingestWpConverter(siteUrl);
+    console.log(
+      `  pages: ${ingest.pages.length}  content zone IDs: ${ingest.contentZoneIds.size}`,
+    );
+    if (ingest.contentZoneIds.size === 0) {
+      console.log("\nNo content zone IDs registered for this site.");
+    }
+    if (ingest.pages.length === 0) {
+      console.log("\nNo pages to crawl.");
+      return;
+    }
+
+    console.log(`\nCrawling ${ingest.pages.length} pages…`);
+    const crawl = await crawlSite(ingest);
+    const crawlSec = (
+      (crawl.finishedAt.getTime() - crawl.startedAt.getTime()) /
+      1000
+    ).toFixed(1);
+    console.log(`  done in ${crawlSec}s`);
+
+    const okPages = crawl.pages.filter((p) => p.status === "ok");
+    const failedPages = crawl.pages.filter((p) => p.status !== "ok");
+    console.log(`  ok: ${okPages.length}  failed: ${failedPages.length}`);
+    if (failedPages.length > 0) {
+      console.log("\nFailed pages:");
+      for (const p of failedPages.slice(0, 10)) {
+        const reason = p.error ?? `HTTP ${p.httpStatus ?? "?"}`;
+        console.log(`  ${p.status.padEnd(18)} ${p.path}  (${reason})`);
+      }
+    }
+
+    console.log(`\nExtracting content zones from ${okPages.length} OK pages…`);
+    const extracted = extractAllContentZones(crawl, ingest.contentZoneIds);
+
+    const totalZones = extracted.reduce((n, p) => n + p.zones.length, 0);
+    const pagesWithZones = extracted.filter((p) => p.zones.length > 0).length;
+    const pagesWithoutZones = extracted.length - pagesWithZones;
+    const avg = extracted.length
+      ? (totalZones / extracted.length).toFixed(1)
+      : "0";
+
+    console.log("\nContent zone summary:");
+    console.log(`  registered zone IDs: ${ingest.contentZoneIds.size}`);
+    console.log(`  total zone matches:  ${totalZones}`);
+    console.log(`  pages with ≥1 zone:  ${pagesWithZones}`);
+    console.log(`  pages with 0 zones:  ${pagesWithoutZones}`);
+    console.log(`  avg zones per page:  ${avg}`);
+
+    const perZoneCounts = new Map<string, { matches: number; pages: number }>();
+    for (const id of ingest.contentZoneIds) {
+      perZoneCounts.set(id, { matches: 0, pages: 0 });
+    }
+    for (const page of extracted) {
+      const seenOnThisPage = new Set<string>();
+      for (const z of page.zones) {
+        const stat = perZoneCounts.get(z.zoneId);
+        if (!stat) continue;
+        stat.matches++;
+        if (!seenOnThisPage.has(z.zoneId)) {
+          stat.pages++;
+          seenOnThisPage.add(z.zoneId);
+        }
+      }
+    }
+
+    console.log("\nPer-zone-ID counts:");
+    const sortedIds = [...perZoneCounts.entries()].sort(
+      (a, b) => b[1].matches - a[1].matches,
+    );
+    for (const [id, stat] of sortedIds) {
+      const orphan = stat.matches === 0 ? "  (orphan)" : "";
+      console.log(
+        `  ${id.padEnd(28)} ${String(stat.matches).padStart(4)} matches on ${String(stat.pages).padStart(3)} pages${orphan}`,
+      );
+    }
+
+    const firstWithZones = extracted.find((p) => p.zones.length > 0);
+    if (firstWithZones) {
+      console.log(`\nFirst page detail (path: ${firstWithZones.path}):`);
+      console.log(`  zones: ${firstWithZones.zones.length}`);
+      for (const z of firstWithZones.zones) {
+        console.log(
+          `    [${z.index}] ${z.zoneId.padEnd(24)} ${z.innerHtml.length.toLocaleString()} chars`,
+        );
+      }
+      const templateBytes = firstWithZones.template.length;
+      console.log(`  template after placeholder replacement: ${templateBytes.toLocaleString()} bytes`);
+    }
+  } catch (err) {
+    console.error("Extract failed:", err instanceof Error ? err.message : err);
+    process.exit(1);
+  }
+}
+
+main();

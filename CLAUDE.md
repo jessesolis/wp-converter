@@ -28,6 +28,9 @@ A web app that converts live Scorpion CMS sites into fully functional, visually 
 - ❌ USC/Make/Model admin config system
 - ❌ Page template overrides — every page gets its own generated template
 
+## Test site
+Primary test URL: **https://www.tennesseeplumbinginc.com/** — a live USC-based Scorpion site. Use this for all ingest, crawl, and content-zone extraction development verification unless directed otherwise.
+
 ## Docs to read
 - `SPEC.md` — full product specification
 - `ARCHITECTURE.md` — system architecture and data flow
