@@ -1,5 +1,5 @@
 import type { ScorpionPage } from "../ingest";
-import type { PageContentZones } from "../parse";
+import type { NavAnalysis, NavVariant, PageContentZones } from "../parse";
 import { rewriteHtmlUrls } from "./url-rewriter";
 
 export interface WxrInputs {
@@ -9,7 +9,12 @@ export interface WxrInputs {
   contentZones: PageContentZones[];
   pathToSlug: Map<string, string>;
   urlMap: Map<string, string>;
+  navAnalysis?: NavAnalysis;
 }
+
+const PRIMARY_MENU_TERM_ID = 1;
+const PRIMARY_MENU_SLUG = "primary-menu";
+const PRIMARY_MENU_NAME = "Primary Menu";
 
 export function buildWxrXml(inputs: WxrInputs): string {
   const zonesByPath = new Map(
@@ -17,9 +22,18 @@ export function buildWxrXml(inputs: WxrInputs): string {
   );
   const pubDate = new Date().toUTCString();
 
-  const items = inputs.pages
-    .map((page, idx) => buildPageItem(page, idx, zonesByPath, inputs))
-    .join("\n");
+  const pageItems = inputs.pages.map((page, idx) =>
+    buildPageItem(page, idx, zonesByPath, inputs),
+  );
+
+  const dominantNav = pickDominantNavVariant(inputs.navAnalysis);
+  const navTerm = dominantNav ? buildNavMenuTerm() : "";
+  const navItems = dominantNav
+    ? buildNavMenuItems(dominantNav, inputs.pages.length)
+    : [];
+
+  const itemsBlock = [...pageItems, ...navItems].join("\n");
+  const termBlock = navTerm ? `${navTerm}\n` : "";
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0"
@@ -45,7 +59,7 @@ export function buildWxrXml(inputs: WxrInputs): string {
       <wp:author_first_name><![CDATA[]]></wp:author_first_name>
       <wp:author_last_name><![CDATA[]]></wp:author_last_name>
     </wp:author>
-${items}
+${termBlock}${itemsBlock}
   </channel>
 </rss>
 `;
@@ -104,10 +118,112 @@ ${meta}
 
 function postmeta(key: string, value: string | undefined): string {
   if (!value) return "";
+  return postmetaRaw(key, value);
+}
+
+function postmetaRaw(key: string, value: string): string {
   return `      <wp:postmeta>
         <wp:meta_key><![CDATA[${key}]]></wp:meta_key>
         <wp:meta_value>${cdata(value)}</wp:meta_value>
       </wp:postmeta>`;
+}
+
+function pickDominantNavVariant(
+  navAnalysis: NavAnalysis | undefined,
+): NavVariant | null {
+  if (!navAnalysis || navAnalysis.variants.length === 0) return null;
+  // analyzeNavigation already sorts variants by descending page count.
+  const variant = navAnalysis.variants[0];
+  if (variant.items.length === 0) return null;
+  return variant;
+}
+
+function buildNavMenuTerm(): string {
+  return `    <wp:term>
+      <wp:term_id>${PRIMARY_MENU_TERM_ID}</wp:term_id>
+      <wp:term_taxonomy><![CDATA[nav_menu]]></wp:term_taxonomy>
+      <wp:term_slug><![CDATA[${PRIMARY_MENU_SLUG}]]></wp:term_slug>
+      <wp:term_parent><![CDATA[]]></wp:term_parent>
+      <wp:term_name><![CDATA[${PRIMARY_MENU_NAME}]]></wp:term_name>
+    </wp:term>`;
+}
+
+function buildNavMenuItems(
+  variant: NavVariant,
+  postIdOffset: number,
+): string[] {
+  const out: string[] = [];
+  // parentByDepth[d] holds the most recent post_id at depth d — the parent for any
+  // subsequent item at depth d+1. Truncate deeper entries when depth drops.
+  const parentByDepth: number[] = [];
+
+  variant.items.forEach((item, i) => {
+    const postId = postIdOffset + i + 1;
+    const parentId =
+      item.depth > 0 ? (parentByDepth[item.depth - 1] ?? 0) : 0;
+    parentByDepth[item.depth] = postId;
+    parentByDepth.length = item.depth + 1;
+
+    const title = item.text || item.href || `Menu item ${i + 1}`;
+    out.push(
+      buildNavMenuItem({
+        postId,
+        menuOrder: i + 1,
+        title,
+        url: item.href,
+        parentId,
+      }),
+    );
+  });
+
+  return out;
+}
+
+function buildNavMenuItem(args: {
+  postId: number;
+  menuOrder: number;
+  title: string;
+  url: string;
+  parentId: number;
+}): string {
+  const { postId, menuOrder, title, url, parentId } = args;
+  const pubDate = new Date().toUTCString();
+  const sqlDate = formatMysqlDate(new Date());
+  const meta = [
+    postmetaRaw("_menu_item_type", "custom"),
+    postmetaRaw("_menu_item_menu_item_parent", String(parentId)),
+    postmetaRaw("_menu_item_object_id", String(postId)),
+    postmetaRaw("_menu_item_object", "custom"),
+    postmetaRaw("_menu_item_target", ""),
+    postmetaRaw("_menu_item_classes", "a:0:{}"),
+    postmetaRaw("_menu_item_xfn", ""),
+    postmetaRaw("_menu_item_url", url),
+  ].join("\n");
+
+  return `    <item>
+      <title>${xmlText(title)}</title>
+      <link>${xmlText(url)}</link>
+      <pubDate>${pubDate}</pubDate>
+      <dc:creator><![CDATA[admin]]></dc:creator>
+      <guid isPermaLink="false">nav-menu-item-${postId}</guid>
+      <description></description>
+      <content:encoded><![CDATA[]]></content:encoded>
+      <excerpt:encoded><![CDATA[]]></excerpt:encoded>
+      <wp:post_id>${postId}</wp:post_id>
+      <wp:post_date><![CDATA[${sqlDate}]]></wp:post_date>
+      <wp:post_date_gmt><![CDATA[${sqlDate}]]></wp:post_date_gmt>
+      <wp:comment_status><![CDATA[closed]]></wp:comment_status>
+      <wp:ping_status><![CDATA[closed]]></wp:ping_status>
+      <wp:post_name><![CDATA[nav-menu-item-${postId}]]></wp:post_name>
+      <wp:status><![CDATA[publish]]></wp:status>
+      <wp:post_parent>0</wp:post_parent>
+      <wp:menu_order>${menuOrder}</wp:menu_order>
+      <wp:post_type><![CDATA[nav_menu_item]]></wp:post_type>
+      <wp:post_password><![CDATA[]]></wp:post_password>
+      <wp:is_sticky>0</wp:is_sticky>
+      <category domain="nav_menu" nicename="${PRIMARY_MENU_SLUG}"><![CDATA[${PRIMARY_MENU_NAME}]]></category>
+${meta}
+    </item>`;
 }
 
 function xmlText(text: string): string {

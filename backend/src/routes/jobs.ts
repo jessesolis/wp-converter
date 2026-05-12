@@ -14,6 +14,7 @@ import {
 } from "../pipeline/ingest";
 import {
   analyzeForms,
+  analyzeNavigation,
   collectAssets,
   collectMedia,
   extractAllContentZones,
@@ -100,6 +101,7 @@ jobsRouter.post("/", async (req: Request, res: Response) => {
     const media = collectMedia(crawl);
     const contentZones = extractAllContentZones(crawl, ingest.contentZoneIds);
     const formAnalysis = analyzeForms(crawl);
+    const navAnalysis = analyzeNavigation(crawl);
 
     updateJob(job.id, { status: "building" });
     const jobRootDir = join(tmpdir(), "scorpion-conversions", job.id);
@@ -113,6 +115,7 @@ jobsRouter.post("/", async (req: Request, res: Response) => {
       media,
       contentZones,
       formAnalysis,
+      navAnalysis,
     });
 
     updateJob(job.id, {

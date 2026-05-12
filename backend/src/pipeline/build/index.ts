@@ -11,6 +11,7 @@ import type {
   AssetInventory,
   FormAnalysis,
   MediaInventory,
+  NavAnalysis,
   PageContentZones,
 } from "../parse";
 import { buildMigrationChecklist } from "./checklist";
@@ -35,6 +36,7 @@ export interface BuildInputs {
   media: MediaInventory;
   contentZones: PageContentZones[];
   formAnalysis: FormAnalysis;
+  navAnalysis: NavAnalysis;
 }
 
 export interface BuildStats {
@@ -156,6 +158,7 @@ export async function buildWpPackage(
     contentZones: inputs.contentZones,
     pathToSlug,
     urlMap,
+    navAnalysis: inputs.navAnalysis,
   });
   await writeFile(join(outputDir, "import.xml"), wxr);
 
