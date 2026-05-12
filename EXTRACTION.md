@@ -189,12 +189,18 @@ Run against every crawled page.
 
 ```
 For each <form> element:
-  1. Extract action and method attributes
-  2. Extract all <input>, <select>, <textarea> elements:
+  1. Skip the form entirely if it has data-search="1" — these are
+     Scorpion's AJAX search/filter forms (site search, blog filter,
+     gallery filter, etc.) that submit to JS handlers, not server
+     endpoints. They are not user-fillable forms we migrate.
+  2. Extract action and method attributes
+  3. Extract all <input>, <select>, <textarea> elements:
      - name, type, placeholder, required attributes
      - associated <label> text (matched by for/id or parent wrapping)
-  3. Store form structure keyed to page URL
+  4. Store form structure keyed to page URL
 ```
+
+After all pages processed, fingerprint each extracted form by its **structural** content (field tags, input types, labels, placeholders, required flags, select options, method) — **excluding** form id, action, and field name. Scorpion auto-generates positional identifiers like `Form_ContactS2` vs `Form_ContactS21` and field names like `ContactS2Form$ITM0$FirstName` that differ only by the form's index on the page; structural fingerprinting collapses these into a single variant while the occurrences list preserves per-page assignment. Most Scorpion sites have 80%+ form duplication across pages.
 
 ---
 

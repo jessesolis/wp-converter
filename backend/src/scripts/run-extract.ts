@@ -1,6 +1,10 @@
 import { ingestWpConverter } from "../pipeline/ingest";
 import { crawlSite } from "../pipeline/crawl";
-import { collectAssets, extractAllContentZones } from "../pipeline/parse";
+import {
+  analyzeForms,
+  collectAssets,
+  extractAllContentZones,
+} from "../pipeline/parse";
 
 async function main() {
   const siteUrl = process.argv[2];
@@ -141,6 +145,49 @@ async function main() {
       for (const url of assets.excludedScripts.slice(0, 10)) console.log(`    ${url}`);
       if (assets.excludedScripts.length > 10) {
         console.log(`    …and ${assets.excludedScripts.length - 10} more`);
+      }
+    }
+
+    const formAnalysis = analyzeForms(crawl);
+    const totalOccurrences = formAnalysis.variants.reduce(
+      (n, v) => n + v.occurrences.length,
+      0,
+    );
+
+    console.log("\nForm analysis:");
+    console.log(`  unique form variants: ${formAnalysis.variants.length}`);
+    console.log(`  total occurrences:    ${totalOccurrences}`);
+    console.log(`  pages without forms:  ${formAnalysis.pagesWithoutForms.length}`);
+
+    for (let i = 0; i < formAnalysis.variants.length; i++) {
+      const v = formAnalysis.variants[i];
+      console.log(
+        `\n  Variant ${i + 1}: ${v.occurrences.length} occurrences, ${v.fields.length} fields, method=${v.method ?? "-"}`,
+      );
+      if (v.formIds.length > 0) {
+        const idsPreview = v.formIds.slice(0, 5).join(", ");
+        const more =
+          v.formIds.length > 5 ? `, …+${v.formIds.length - 5}` : "";
+        console.log(`    form ids: ${idsPreview}${more}`);
+      }
+      console.log(`    fields:`);
+      for (const f of v.fields.slice(0, 10)) {
+        const tagDesc =
+          f.tag === "input" ? `input[${f.inputType ?? "?"}]` : f.tag;
+        const reqMark = f.required ? " *" : "";
+        const labelOrPh = f.label ?? f.placeholder ?? "";
+        console.log(`      ${tagDesc.padEnd(14)} ${labelOrPh}${reqMark}`);
+      }
+      if (v.fields.length > 10) {
+        console.log(`      …and ${v.fields.length - 10} more fields`);
+      }
+      console.log(`    appears on (first 5 pages):`);
+      for (const occ of v.occurrences.slice(0, 5)) {
+        const idTag = occ.formId ? `  [${occ.formId}]` : "";
+        console.log(`      ${occ.path}${idTag}`);
+      }
+      if (v.occurrences.length > 5) {
+        console.log(`      …and ${v.occurrences.length - 5} more`);
       }
     }
   } catch (err) {
