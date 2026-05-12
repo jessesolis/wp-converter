@@ -1,6 +1,10 @@
 import { ingestWpConverter } from "../pipeline/ingest";
 import { crawlSite } from "../pipeline/crawl";
-import { collectAssets, extractAllContentZones } from "../pipeline/parse";
+import {
+  analyzeNavigation,
+  collectAssets,
+  extractAllContentZones,
+} from "../pipeline/parse";
 
 async function main() {
   const siteUrl = process.argv[2];
@@ -141,6 +145,56 @@ async function main() {
       for (const url of assets.excludedScripts.slice(0, 10)) console.log(`    ${url}`);
       if (assets.excludedScripts.length > 10) {
         console.log(`    …and ${assets.excludedScripts.length - 10} more`);
+      }
+    }
+
+    const navAnalysis = analyzeNavigation(crawl);
+    console.log("\nNavigation analysis:");
+    console.log(`  unique nav variants: ${navAnalysis.variants.length}`);
+    console.log(`  pages without nav:   ${navAnalysis.pagesWithoutNav.length}`);
+
+    if (navAnalysis.variants.length === 1) {
+      const only = navAnalysis.variants[0];
+      console.log(
+        `  → all ${only.pages.length} pages share one nav (${only.items.length} items) — global menu`,
+      );
+    } else if (navAnalysis.variants.length > 1) {
+      console.log(
+        `  → variations detected — review wizard required to pick primary menu`,
+      );
+    }
+
+    for (let i = 0; i < navAnalysis.variants.length; i++) {
+      const v = navAnalysis.variants[i];
+      console.log(
+        `\n  Variant ${i + 1}: ${v.pages.length} pages, ${v.items.length} items`,
+      );
+      console.log(`    pages (first 5):`);
+      for (const p of v.pages.slice(0, 5)) {
+        console.log(`      ${p.path}`);
+      }
+      if (v.pages.length > 5) {
+        console.log(`      …and ${v.pages.length - 5} more`);
+      }
+      console.log(`    items (first 15):`);
+      for (const item of v.items.slice(0, 15)) {
+        const indent = "  ".repeat(item.depth);
+        console.log(`      ${indent}• ${item.text || "(empty)"} → ${item.href}`);
+      }
+      if (v.items.length > 15) {
+        console.log(`      …and ${v.items.length - 15} more items`);
+      }
+    }
+
+    if (navAnalysis.pagesWithoutNav.length > 0) {
+      console.log(`\n  Pages without <nav>:`);
+      for (const p of navAnalysis.pagesWithoutNav.slice(0, 10)) {
+        console.log(`    ${p.path}`);
+      }
+      if (navAnalysis.pagesWithoutNav.length > 10) {
+        console.log(
+          `    …and ${navAnalysis.pagesWithoutNav.length - 10} more`,
+        );
       }
     }
   } catch (err) {
