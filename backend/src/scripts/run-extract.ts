@@ -3,6 +3,7 @@ import { crawlSite } from "../pipeline/crawl";
 import {
   analyzeForms,
   collectAssets,
+  collectMedia,
   extractAllContentZones,
 } from "../pipeline/parse";
 
@@ -145,6 +146,54 @@ async function main() {
       for (const url of assets.excludedScripts.slice(0, 10)) console.log(`    ${url}`);
       if (assets.excludedScripts.length > 10) {
         console.log(`    …and ${assets.excludedScripts.length - 10} more`);
+      }
+    }
+
+    const media = collectMedia(crawl);
+    const sameTotal =
+      media.images.length +
+      media.downloadables.length +
+      media.backgrounds.length;
+    const excludedTotal =
+      media.excludedImages.length +
+      media.excludedDownloadables.length +
+      media.excludedBackgrounds.length;
+    console.log("\nMedia inventory:");
+    console.log(`  same-origin total:    ${sameTotal}`);
+    console.log(`    images:             ${media.images.length}`);
+    console.log(`    downloadables:      ${media.downloadables.length}`);
+    console.log(`    background-images:  ${media.backgrounds.length}`);
+    console.log(`  third-party total:    ${excludedTotal}`);
+    console.log(`    images:             ${media.excludedImages.length}`);
+    console.log(`    downloadables:      ${media.excludedDownloadables.length}`);
+    console.log(`    background-images:  ${media.excludedBackgrounds.length}`);
+
+    if (media.images.length > 0) {
+      console.log(`\n  Same-origin images (first 10):`);
+      for (const url of media.images.slice(0, 10)) console.log(`    ${url}`);
+      if (media.images.length > 10) {
+        console.log(`    …and ${media.images.length - 10} more`);
+      }
+    }
+    if (media.downloadables.length > 0) {
+      console.log(`\n  Downloadable files:`);
+      for (const url of media.downloadables.slice(0, 10)) console.log(`    ${url}`);
+      if (media.downloadables.length > 10) {
+        console.log(`    …and ${media.downloadables.length - 10} more`);
+      }
+    }
+    if (media.backgrounds.length > 0) {
+      console.log(`\n  Background-images (first 10):`);
+      for (const url of media.backgrounds.slice(0, 10)) console.log(`    ${url}`);
+      if (media.backgrounds.length > 10) {
+        console.log(`    …and ${media.backgrounds.length - 10} more`);
+      }
+    }
+    if (media.excludedImages.length > 0) {
+      console.log(`\n  Excluded third-party images (first 5):`);
+      for (const url of media.excludedImages.slice(0, 5)) console.log(`    ${url}`);
+      if (media.excludedImages.length > 5) {
+        console.log(`    …and ${media.excludedImages.length - 5} more`);
       }
     }
 

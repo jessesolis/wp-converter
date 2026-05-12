@@ -6,6 +6,8 @@ export {
 export type { ExtractedZone, PageContentZones } from "./types";
 export { collectAssets } from "./assets";
 export type { AssetInventory } from "./assets";
+export { collectMedia } from "./media";
+export type { MediaInventory } from "./media";
 export {
   extractFormsFromPage,
   extractAllForms,
