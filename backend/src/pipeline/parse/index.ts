@@ -22,3 +22,5 @@ export type {
   FormVariant,
   FormAnalysis,
 } from "./forms";
+export { analyzeNavigation } from "./navigation";
+export type { NavItem, NavVariant, NavAnalysis } from "./navigation";
