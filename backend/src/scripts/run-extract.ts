@@ -1,5 +1,9 @@
 import { ingestWpConverter } from "../pipeline/ingest";
 import { crawlSite } from "../pipeline/crawl";
+import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { downloadMedia } from "../pipeline/download";
 import {
   analyzeForms,
   collectAssets,
@@ -8,9 +12,13 @@ import {
 } from "../pipeline/parse";
 
 async function main() {
-  const siteUrl = process.argv[2];
+  const args = process.argv.slice(2);
+  const siteUrl = args.find((a) => !a.startsWith("--")) ?? "";
+  const shouldDownload = args.includes("--download");
   if (!siteUrl) {
-    console.error("Usage: tsx src/scripts/run-extract.ts <site_url>");
+    console.error(
+      "Usage: tsx src/scripts/run-extract.ts <site_url> [--download]",
+    );
     process.exit(1);
   }
 
@@ -194,6 +202,47 @@ async function main() {
       for (const url of media.excludedImages.slice(0, 5)) console.log(`    ${url}`);
       if (media.excludedImages.length > 5) {
         console.log(`    …and ${media.excludedImages.length - 5} more`);
+      }
+    }
+
+    if (shouldDownload) {
+      const jobId = randomUUID();
+      const destDir = join(
+        tmpdir(),
+        "scorpion-conversions",
+        jobId,
+        "media",
+      );
+      console.log(`\nDownloading media → ${destDir}`);
+      const t0 = Date.now();
+      const outcome = await downloadMedia(media, destDir);
+      const elapsedSec = ((Date.now() - t0) / 1000).toFixed(1);
+      const mb = (outcome.totalBytes / 1024 / 1024).toFixed(2);
+      console.log(
+        `  done in ${elapsedSec}s  ok: ${outcome.okCount}  failed: ${outcome.failedCount}  total: ${mb} MB`,
+      );
+
+      const samples = [...outcome.urlMap.entries()].slice(0, 8);
+      if (samples.length > 0) {
+        console.log("\n  URL rewrite map (first 8):");
+        for (const [orig, wp] of samples) {
+          console.log(`    ${orig}`);
+          console.log(`      → ${wp}`);
+        }
+        if (outcome.urlMap.size > 8) {
+          console.log(`    …and ${outcome.urlMap.size - 8} more`);
+        }
+      }
+
+      const failures = outcome.results.filter((r) => r.status === "failed");
+      if (failures.length > 0) {
+        console.log(`\n  Failed downloads:`);
+        for (const f of failures.slice(0, 10)) {
+          console.log(`    ${f.error?.padEnd(30) ?? "error"} ${f.url}`);
+        }
+        if (failures.length > 10) {
+          console.log(`    …and ${failures.length - 10} more`);
+        }
       }
     }
 
