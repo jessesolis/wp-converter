@@ -17,13 +17,28 @@ interface IngestPage {
   canonical: string;
 }
 
+interface BuildStats {
+  ok: number;
+  failed: number;
+  totalBytes: number;
+}
+
 interface JobSuccessResponse {
   jobId: string;
-  status: "ingest_complete";
-  result: {
+  status: "ready";
+  ingest: {
     siteUrl: string;
     pages: IngestPage[];
     contentZoneIds: string[];
+  };
+  build: {
+    downloadUrl: string;
+    byteSize: number;
+    pageCount: number;
+    zoneCount: number;
+    css: BuildStats;
+    js: BuildStats;
+    media: BuildStats;
   };
 }
 
@@ -181,10 +196,18 @@ export function JobStartForm() {
         disabled={submitting}
         className="inline-flex w-full items-center justify-center rounded-md bg-gray-900 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60"
       >
-        {submitting ? "Running ingest…" : "Start conversion"}
+        {submitting
+          ? "Running conversion (this may take a minute)…"
+          : "Start conversion"}
       </button>
     </form>
   );
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function IngestResultPanel({
@@ -194,74 +217,73 @@ function IngestResultPanel({
   result: JobSuccessResponse;
   onReset: () => void;
 }) {
-  const { jobId, result: data } = result;
+  const { jobId, ingest, build } = result;
   return (
     <div className="space-y-6">
       <div className="space-y-1">
         <p className="text-xs font-medium uppercase tracking-wider text-green-700">
-          Ingest complete
+          Conversion complete
         </p>
         <p className="text-sm text-gray-600">
-          Fetched <code className="text-gray-900">{data.siteUrl}/wp-converter/</code>{" "}
-          and parsed both tables.
+          Crawled <code className="text-gray-900">{ingest.siteUrl}</code> and
+          assembled a WordPress package.
         </p>
       </div>
 
-      <dl className="grid grid-cols-2 gap-4">
+      <a
+        href={build.downloadUrl}
+        className="block rounded-md border border-gray-900 bg-gray-900 px-4 py-3 text-center text-sm font-medium text-white shadow-sm transition hover:bg-gray-800"
+      >
+        Download WordPress package ({formatBytes(build.byteSize)})
+      </a>
+
+      <dl className="grid grid-cols-3 gap-3 text-sm">
         <div className="rounded-md border border-gray-200 bg-gray-50 p-3">
-          <dt className="text-xs uppercase tracking-wider text-gray-500">
-            Pages found
-          </dt>
-          <dd className="mt-1 text-2xl font-semibold text-gray-900">
-            {data.pages.length}
+          <dt className="text-xs uppercase tracking-wider text-gray-500">Pages</dt>
+          <dd className="mt-1 text-xl font-semibold text-gray-900">
+            {build.pageCount}
           </dd>
         </div>
         <div className="rounded-md border border-gray-200 bg-gray-50 p-3">
           <dt className="text-xs uppercase tracking-wider text-gray-500">
-            Content zone IDs
+            Content zones
           </dt>
-          <dd className="mt-1 text-2xl font-semibold text-gray-900">
-            {data.contentZoneIds.length}
+          <dd className="mt-1 text-xl font-semibold text-gray-900">
+            {build.zoneCount}
+          </dd>
+        </div>
+        <div className="rounded-md border border-gray-200 bg-gray-50 p-3">
+          <dt className="text-xs uppercase tracking-wider text-gray-500">
+            Zone IDs
+          </dt>
+          <dd className="mt-1 text-xl font-semibold text-gray-900">
+            {ingest.contentZoneIds.length}
           </dd>
         </div>
       </dl>
 
-      {data.pages.length > 0 && (
+      <section>
+        <h3 className="text-sm font-medium text-gray-900">Assets downloaded</h3>
+        <dl className="mt-2 grid grid-cols-3 gap-3 text-sm">
+          <AssetStat label="CSS" stats={build.css} />
+          <AssetStat label="JS" stats={build.js} />
+          <AssetStat label="Media" stats={build.media} />
+        </dl>
+      </section>
+
+      {ingest.pages.length > 0 && (
         <section>
           <h3 className="text-sm font-medium text-gray-900">
-            First {Math.min(data.pages.length, 10)} pages
+            First {Math.min(ingest.pages.length, 10)} pages
           </h3>
           <ul className="mt-2 divide-y divide-gray-200 rounded-md border border-gray-200">
-            {data.pages.slice(0, 10).map((p) => (
+            {ingest.pages.slice(0, 10).map((p) => (
               <li key={p.canonical} className="px-3 py-2 text-sm">
                 <p className="font-medium text-gray-900">{p.title || p.path}</p>
                 <p className="truncate text-xs text-gray-500">{p.canonical}</p>
               </li>
             ))}
           </ul>
-        </section>
-      )}
-
-      {data.contentZoneIds.length > 0 && (
-        <section>
-          <h3 className="text-sm font-medium text-gray-900">
-            Content zone IDs
-          </h3>
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {data.contentZoneIds.slice(0, 30).map((id) => (
-              <span
-                key={id}
-                className="inline-flex items-center rounded bg-gray-100 px-2 py-0.5 text-xs font-mono text-gray-800"
-              >
-                {id}
-              </span>
-            ))}
-            {data.contentZoneIds.length > 30 && (
-              <span className="text-xs text-gray-500">
-                +{data.contentZoneIds.length - 30} more
-              </span>
-            )}
-          </div>
         </section>
       )}
 
@@ -276,6 +298,30 @@ function IngestResultPanel({
       >
         Start another
       </button>
+    </div>
+  );
+}
+
+function AssetStat({
+  label,
+  stats,
+}: {
+  label: string;
+  stats: BuildStats;
+}) {
+  const failedNote = stats.failed > 0 ? ` (${stats.failed} failed)` : "";
+  return (
+    <div className="rounded-md border border-gray-200 bg-gray-50 p-3">
+      <dt className="text-xs uppercase tracking-wider text-gray-500">{label}</dt>
+      <dd className="mt-1 font-semibold text-gray-900">
+        {stats.ok}
+        {failedNote && (
+          <span className="ml-1 text-xs font-normal text-amber-700">
+            {failedNote}
+          </span>
+        )}
+      </dd>
+      <dd className="text-xs text-gray-500">{formatBytes(stats.totalBytes)}</dd>
     </div>
   );
 }

@@ -1,12 +1,23 @@
 import { Router, type Request, type Response } from "express";
+import { stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { isUscVersion, type UscVersion } from "../config/usc-versions";
-import { createJob, updateJob } from "../db/job-store";
+import { createJob, getJob, updateJob } from "../db/job-store";
+import { buildWpPackage } from "../pipeline/build";
+import { crawlSite } from "../pipeline/crawl";
 import {
   IngestFetchError,
   IngestParseError,
   ingestWpConverter,
   type IngestResult,
 } from "../pipeline/ingest";
+import {
+  analyzeForms,
+  collectAssets,
+  collectMedia,
+  extractAllContentZones,
+} from "../pipeline/parse";
 
 export const jobsRouter = Router();
 
@@ -59,6 +70,14 @@ function serializeIngest(result: IngestResult) {
   };
 }
 
+function slugifyForFilename(value: string): string {
+  const cleaned = value
+    .replace(/[^a-zA-Z0-9._-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return cleaned || "export";
+}
+
 jobsRouter.post("/", async (req: Request, res: Response) => {
   const validated = validateBody(req.body);
   if (!validated.ok) {
@@ -67,18 +86,54 @@ jobsRouter.post("/", async (req: Request, res: Response) => {
   }
 
   const job = createJob(validated.input);
-  updateJob(job.id, { status: "ingesting" });
 
   try {
-    const ingestResult = await ingestWpConverter(validated.input.siteUrl);
-    const completed = updateJob(job.id, {
-      status: "ingest_complete",
-      ingestResult,
+    updateJob(job.id, { status: "ingesting" });
+    const ingest = await ingestWpConverter(validated.input.siteUrl);
+    updateJob(job.id, { ingestResult: ingest });
+
+    updateJob(job.id, { status: "crawling" });
+    const crawl = await crawlSite(ingest);
+
+    updateJob(job.id, { status: "parsing" });
+    const assets = collectAssets(crawl);
+    const media = collectMedia(crawl);
+    const contentZones = extractAllContentZones(crawl, ingest.contentZoneIds);
+    const formAnalysis = analyzeForms(crawl);
+
+    updateJob(job.id, { status: "building" });
+    const jobRootDir = join(tmpdir(), "scorpion-conversions", job.id);
+    const buildOutput = await buildWpPackage({
+      jobRootDir,
+      siteUrl: ingest.siteUrl,
+      siteTitle: validated.input.siteTitle,
+      ingest,
+      crawl,
+      assets,
+      media,
+      contentZones,
+      formAnalysis,
     });
+
+    updateJob(job.id, {
+      status: "ready",
+      exportPath: buildOutput.zipPath,
+      exportSize: buildOutput.zipByteSize,
+    });
+
     res.status(201).json({
-      jobId: completed.id,
-      status: completed.status,
-      result: serializeIngest(ingestResult),
+      jobId: job.id,
+      status: "ready",
+      ingest: serializeIngest(ingest),
+      build: {
+        downloadUrl: `/api/jobs/${job.id}/export`,
+        byteSize: buildOutput.zipByteSize,
+        pageCount: buildOutput.pageCount,
+        zoneCount: buildOutput.zoneCount,
+        css: buildOutput.css,
+        js: buildOutput.js,
+        media: buildOutput.mediaDownload,
+      },
     });
   } catch (err) {
     const detail = err instanceof Error ? err.message : "Unknown error";
@@ -99,4 +154,30 @@ jobsRouter.post("/", async (req: Request, res: Response) => {
     }
     res.status(500).json({ error: detail, jobId: job.id });
   }
+});
+
+jobsRouter.get("/:id/export", async (req: Request, res: Response) => {
+  const job = getJob(req.params.id);
+  if (!job) {
+    res.status(404).json({ error: "Job not found" });
+    return;
+  }
+  if (job.status !== "ready" || !job.exportPath) {
+    res
+      .status(409)
+      .json({ error: `Export not ready (status: ${job.status})` });
+    return;
+  }
+  try {
+    await stat(job.exportPath);
+  } catch {
+    res.status(410).json({ error: "Export file no longer exists" });
+    return;
+  }
+  const filename = `${slugifyForFilename(job.input.siteTitle)}-wordpress.zip`;
+  res.download(job.exportPath, filename, (err) => {
+    if (err && !res.headersSent) {
+      res.status(500).json({ error: "Download failed" });
+    }
+  });
 });

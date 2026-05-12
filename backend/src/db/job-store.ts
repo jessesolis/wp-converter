@@ -5,7 +5,10 @@ import type { IngestResult } from "../pipeline/ingest";
 export type JobStatus =
   | "queued"
   | "ingesting"
-  | "ingest_complete"
+  | "crawling"
+  | "parsing"
+  | "building"
+  | "ready"
   | "failed";
 
 export interface JobInput {
@@ -21,6 +24,8 @@ export interface JobRecord {
   createdAt: Date;
   updatedAt: Date;
   ingestResult?: IngestResult;
+  exportPath?: string;
+  exportSize?: number;
   error?: string;
 }
 

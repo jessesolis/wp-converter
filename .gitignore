@@ -5,6 +5,9 @@ build/
 out/
 coverage/
 
+# `build/` above also matches our pipeline source directory; un-ignore it.
+!backend/src/pipeline/build/
+
 .env
 .env.local
 .env.*.local
