@@ -4,7 +4,10 @@ import { closeDb, runMigrations } from "./db/client";
 import { closeQueue } from "./queue";
 import { createConversionWorker } from "./queue/worker";
 import { jobsRouter } from "./routes/jobs";
+import { attachJobEventsWss } from "./routes/jobs-ws";
+import type { Server } from "node:http";
 import type { Worker } from "bullmq";
+import type { WebSocketServer } from "ws";
 
 const app = express();
 
@@ -17,7 +20,8 @@ app.get("/health", (_req, res) => {
 app.use("/api/jobs", jobsRouter);
 
 let worker: Worker | null = null;
-let server: ReturnType<typeof app.listen> | null = null;
+let server: Server | null = null;
+let wss: WebSocketServer | null = null;
 
 async function main() {
   try {
@@ -40,10 +44,15 @@ async function main() {
   server = app.listen(env.port, () => {
     console.log(`Backend listening on http://localhost:${env.port}`);
   });
+
+  wss = attachJobEventsWss(server);
 }
 
 async function shutdown() {
   console.log("Shutting down…");
+  if (wss) {
+    await new Promise<void>((resolve) => wss!.close(() => resolve()));
+  }
   if (server) {
     await new Promise<void>((resolve) => server!.close(() => resolve()));
   }

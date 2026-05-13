@@ -31,7 +31,8 @@ End-to-end conversion runs through a single `POST /api/jobs` call: ingest → cr
 | Route — `GET /api/jobs/:id/export` (stream zip) | done | same |
 | Async pipeline — BullMQ worker (in-band, concurrency 1, 3-attempt retry w/ exponential backoff) | done | `backend/src/queue/worker.ts` + `backend/src/pipeline/run.ts` |
 | Frontend — landing form (redirects to `/job/[id]`) | done | `frontend/components/job-start-form.tsx` |
-| Frontend — progress page (polls `GET /api/jobs/:id`, shows stage list + download) | done — WebSocket upgrade is Slice 4 | `frontend/app/job/[id]/job-progress.tsx` |
+| Frontend — progress page (WebSocket `snapshot` + `update` stream, polling fallback) | done | `frontend/app/job/[id]/job-progress.tsx` |
+| WebSocket route — `/api/jobs/:id/events` (snapshot on connect, updates on transition, code 1000 on terminal) | done | `backend/src/routes/jobs-ws.ts` + `backend/src/queue/events.ts` |
 
 ### Verified on the canonical test site
 `https://www.tennesseeplumbinginc.com/` — runs in ~30–45 s, produces a ~4.7 MB zip with 204 files (88 page templates, 23 stylesheets, 55 JS files, 19 media files, valid WXR XML, migration checklist).
@@ -116,8 +117,10 @@ src/
   queue/
     index.ts               # BullMQ Queue + shared ioredis connection + QUEUE_NAME
     worker.ts              # Worker (concurrency 1, 3-attempt retry w/ exponential backoff)
+    events.ts              # In-process JobEventBus — publishJobUpdate / subscribeJob
   routes/
     jobs.ts                # POST /api/jobs (enqueue, 202) + GET /:id + GET /:id/export
+    jobs-ws.ts             # WebSocketServer attached to the HTTP `upgrade` event
   scripts/
     run-ingest.ts          # Step 0 only
     run-crawl.ts           # Steps 0 + 1
@@ -164,7 +167,7 @@ The latest meaningful commits (newest first). `git log --oneline` for the full l
 
 2. **Nav menus emitted as `custom`-type items.** WXR now contains the dominant nav variant as a `primary-menu` `<wp:term>` plus one `nav_menu_item` per `NavItem`. Items use `_menu_item_type=custom` with `_menu_item_url` set to the (relative) href, and depth → parent linkage via `_menu_item_menu_item_parent`. Hrefs that match internal pages are *not* linked to those pages' post_ids — they resolve at request time via the URL. Upgrading those to `_menu_item_type=post_type` / `_menu_item_object=page` references would give cleaner admin UX (menu items show as "Home", "About", etc., not raw URLs), but is a follow-up. Multi-variant nav still picks `variants[0]` (the most common) — the review wizard will need to surface a chooser when more than one variant is present.
 
-3. ~~**Synchronous `POST /api/jobs` blocks 30–90 s.**~~ Resolved in Slice 3. POST now returns 202 + `{ jobId, status: "queued" }` in <100 ms; the BullMQ worker runs the pipeline; the frontend polls `GET /api/jobs/:id` every second. Slice 4 will replace polling with WebSocket so the page updates without the 1-s lag and so we can stream per-stage detail later.
+3. ~~**Synchronous `POST /api/jobs` blocks 30–90 s.**~~ Resolved in Slices 3+4. POST returns 202 in <100 ms; the BullMQ worker runs the pipeline; the frontend subscribes to `ws://…/api/jobs/:id/events` and reacts in real time. Polling remains as a fallback for any non-1000 close.
 
 4. ~~**In-memory job store resets on backend restart.**~~ Resolved in Slice 2. `db/job-store.ts` now reads/writes the `jobs` table via drizzle. Re-verified end-to-end: a job inserted in one backend process is downloadable after the process restarts.
 
@@ -178,7 +181,11 @@ The latest meaningful commits (newest first). `git log --oneline` for the full l
 
 9. **No tests.** No vitest, no fixture HTML for the parsers, no integration test that round-trips a fake site. End-to-end verification today is the `run-extract.ts` CLI + the test site. Worth adding fixture-based unit tests for the parsers (ingest, content-zones, forms, nav) before they accrete more behavior.
 
-10. **Most `frontend/app/job/[id]/...` routes are still placeholder `<main />` files.** The progress page is live (`app/job/[id]/page.tsx` + `job-progress.tsx`), but the review wizard (pages / nav / zones / media / forms / styles), preview, and export flows are still empty. They will be built after Slice 4 (WebSocket-driven progress) so we can drive the wizard off live state instead of polling.
+10. **Most `frontend/app/job/[id]/...` routes are still placeholder `<main />` files.** The progress page is live (`app/job/[id]/page.tsx` + `job-progress.tsx`), but the review wizard (pages / nav / zones / media / forms / styles), preview, and export flows are still empty. The WebSocket channel from Slice 4 is the natural place to surface per-stage detail for the wizard later (variant counts, excluded scripts, parse timings, etc.).
+
+11. **In-process pub/sub assumes a single backend node.** `queue/events.ts` uses a Node `EventEmitter` — it works because the BullMQ worker and the Express server share a process. If the worker is ever split out (per ARCHITECTURE.md's eventual model), we'll need to switch to Redis pub/sub or BullMQ's `QueueEvents` so updates cross processes.
+
+12. **WebSocket route is not proxied through Next.** Next.js's `rewrites` only proxy HTTP. The browser connects directly to `ws://localhost:3001/api/jobs/:id/events` using `NEXT_PUBLIC_BACKEND_WS_URL` (default `ws://localhost:3001`). When we land behind a reverse proxy in deploy, set that env var to the public WS origin.
 
 ---
 
@@ -186,12 +193,11 @@ The latest meaningful commits (newest first). `git log --oneline` for the full l
 
 | Slice | Size | Why |
 |---|---|---|
-| WebSocket live-progress (Slice 4 of the async refactor) | small-medium | Replaces the 1-s polling on `/job/[id]` with a push stream; sets up the channel the review wizard will use later |
-| Multi-`the_content()` placement | medium | Investigate Gutenberg `wp:html` or custom shortcodes per placeholder so each content zone renders in place; highest-impact for visual accuracy |
-| Fixture-based parser tests | medium | Defensive — locks in current parsing behavior before the surface area grows. Use vitest + saved HTML fixtures from the test site |
-| Import generated zip into a real WP install | small-ish | Has the highest "is this actually working?" signal. WP can run locally via `wp-env` or Docker; importer is `Tools → Import → WordPress`. Will reveal real-world fidelity gaps |
-| Add legacy framework pre-check | small | The deferred-but-documented stage. Spec is in `EXTRACTION.md`. Useful once we have real non-USC users hitting the tool |
-| Review wizard frontend | large | The `frontend/app/job/[id]/review/*` placeholder routes need real UI to surface the per-stage data (especially nav variants when present, form variants, excluded scripts) |
+| Multi-`the_content()` placement | medium | Investigate Gutenberg `wp:html` or custom shortcodes per placeholder so each content zone renders in place; highest-impact for visual accuracy now that the plumbing is in. |
+| Review wizard frontend | large | The `frontend/app/job/[id]/review/*` placeholder routes still need real UI. With the WS channel in place we can drive it off live state instead of polling, and per-stage detail can be added to the channel as needed. |
+| Fixture-based parser tests | medium | Defensive — locks in current parsing behavior before the surface area grows. Use vitest + saved HTML fixtures from the test site. |
+| Import generated zip into a real WP install | small-ish | Highest "is this actually working?" signal. WP can run locally via `wp-env` or Docker; importer is `Tools → Import → WordPress`. Will reveal real-world fidelity gaps, including how the new nav menu items resolve. |
+| Add legacy framework pre-check | small | The deferred-but-documented stage. Spec is in `EXTRACTION.md`. Useful once we have real non-USC users hitting the tool. |
 
 ---
 

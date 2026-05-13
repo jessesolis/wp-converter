@@ -1,6 +1,7 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { updateJob } from "../db/job-store";
+import { updateJob, type JobPatch, type JobRecord } from "../db/job-store";
+import { publishJobUpdate } from "../queue/events";
 import { buildWpPackage } from "./build";
 import { crawlSite } from "./crawl";
 import { ingestWpConverter } from "./ingest";
@@ -25,6 +26,17 @@ export interface RunConversionOutput {
   zoneCount: number;
 }
 
+// Wraps updateJob() so every stage transition is mirrored onto the in-process
+// JobEventBus that the WebSocket route subscribes to.
+async function transition(
+  jobId: string,
+  patch: JobPatch,
+): Promise<JobRecord> {
+  const row = await updateJob(jobId, patch);
+  publishJobUpdate(row);
+  return row;
+}
+
 // Single orchestration of the conversion pipeline. Writes stage transitions
 // to the `jobs` row as it progresses. Throws on any stage failure — the
 // caller (the BullMQ worker) is responsible for marking the row failed on
@@ -34,20 +46,20 @@ export async function runConversion(
 ): Promise<RunConversionOutput> {
   const { jobId, siteUrl, siteTitle } = input;
 
-  await updateJob(jobId, { status: "ingest" });
+  await transition(jobId, { status: "ingest" });
   const ingest = await ingestWpConverter(siteUrl);
 
-  await updateJob(jobId, { status: "crawl" });
+  await transition(jobId, { status: "crawl" });
   const crawl = await crawlSite(ingest);
 
-  await updateJob(jobId, { status: "parse" });
+  await transition(jobId, { status: "parse" });
   const assets = collectAssets(crawl);
   const media = collectMedia(crawl);
   const contentZones = extractAllContentZones(crawl, ingest.contentZoneIds);
   const formAnalysis = analyzeForms(crawl);
   const navAnalysis = analyzeNavigation(crawl);
 
-  await updateJob(jobId, { status: "build" });
+  await transition(jobId, { status: "build" });
   const jobRootDir = join(tmpdir(), "scorpion-conversions", jobId);
   const buildOutput = await buildWpPackage({
     jobRootDir,
@@ -62,7 +74,7 @@ export async function runConversion(
     navAnalysis,
   });
 
-  await updateJob(jobId, {
+  await transition(jobId, {
     status: "ready",
     outputPath: buildOutput.zipPath,
     completedAt: new Date(),

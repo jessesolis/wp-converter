@@ -1,6 +1,7 @@
 import { Worker, type Job } from "bullmq";
 import { updateJob } from "../db/job-store";
 import { runConversion } from "../pipeline/run";
+import { publishJobUpdate } from "./events";
 import {
   QUEUE_NAME,
   redisConnection,
@@ -43,11 +44,12 @@ export function createConversionWorker(): Worker<ConversionJobData> {
     );
     if (isFinal) {
       try {
-        await updateJob(job.data.jobId, {
+        const row = await updateJob(job.data.jobId, {
           status: "failed",
           error: detail,
           completedAt: new Date(),
         });
+        publishJobUpdate(row);
       } catch (e) {
         console.error(
           `[worker] failed to mark job failed jobId=${job.data.jobId}:`,
