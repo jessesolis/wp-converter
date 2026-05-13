@@ -15,15 +15,16 @@ End-to-end conversion runs through a single `POST /api/jobs` call: ingest → cr
 | Step 1 — Puppeteer crawl | done (4-worker concurrency, 30s timeout/page) | `backend/src/pipeline/crawl/` |
 | Step 2/3 — Stylesheet + JS dedup, inline `<style>` capture | done | `backend/src/pipeline/parse/assets.ts` |
 | Step 4 — Content zones | done (ID-based, in DOM order, placeholder substitution) | `backend/src/pipeline/parse/content-zones.ts` |
-| Step 5 — Navigation analysis | done (variant detection via fingerprint) — **not yet wired into WXR** | `backend/src/pipeline/parse/navigation.ts` |
-| Step 6 — Media discovery | done | `backend/src/pipeline/parse/media.ts` |
+| Step 5 — Navigation analysis | done (variant detection via fingerprint) | `backend/src/pipeline/parse/navigation.ts` |
+| Step 6 — Media discovery | done (incl. `data-src` / `data-srcset` lazy-load attrs) | `backend/src/pipeline/parse/media.ts` |
 | Step 6 — Media download + URL map | done (concurrent, filename collision suffixes) | `backend/src/pipeline/download/media.ts` |
 | Step 7 — Forms | done (AJAX filter via `data-search="1"`, structural fingerprint variant analysis) | `backend/src/pipeline/parse/forms.ts` |
 | WP build — CSS/JS download | done | `backend/src/pipeline/download/assets.ts` |
-| WP build — URL rewriting (HTML + CSS) | done | `backend/src/pipeline/build/url-rewriter.ts` |
+| WP build — URL rewriting (HTML + CSS + lazy-load `data-src`) | done | `backend/src/pipeline/build/url-rewriter.ts` |
 | WP build — Theme files (`style.css`, `functions.php`, `index.php`) | done | `backend/src/pipeline/build/theme.ts` |
+| WP build — Page hierarchy (post_parent linking, nested URLs) | done | `backend/src/pipeline/build/hierarchy.ts` |
 | WP build — Per-page PHP templates | done (per-zone `[scorpion_zone id]` shortcode at each original DOM slot) | `backend/src/pipeline/build/templates.ts` |
-| WP build — WXR XML (pages + Classic blocks + Yoast meta + nav menu) | done | `backend/src/pipeline/build/wxr.ts` |
+| WP build — WXR XML (pages + nav menu + zone postmeta + `_wp_page_template`) | done | `backend/src/pipeline/build/wxr.ts` |
 | WP build — Migration checklist | done | `backend/src/pipeline/build/checklist.ts` |
 | WP build — Zip | done (archiver v7, pinned — see §5) | `backend/src/pipeline/build/zip.ts` |
 | Route — `POST /api/jobs` (enqueue, returns 202 + jobId) | done | `backend/src/routes/jobs.ts` |
@@ -46,7 +47,7 @@ Three terminals — Docker (Postgres + Redis), backend on `:3001`, frontend on `
 ```
 # Once per machine (Docker Desktop must be running)
 cp backend/.env.example backend/.env   # one-time; matches docker-compose defaults
-docker compose up -d                   # starts Postgres 16 + Redis 7
+docker compose up -d                   # Postgres + Redis (app data plane)
 # → containers `scorpion-wp-converter-postgres` and `…-redis`
 
 # Terminal 1 — backend
@@ -67,6 +68,18 @@ npm run db:studio                   # drizzle-kit studio against the local DB
 docker compose down                 # stop services (volumes persist)
 docker compose down -v              # stop + wipe the local DB
 ```
+
+### Local WordPress for end-to-end validation
+A second docker-compose service group (WordPress 6.7 + MariaDB 11 + wp-cli) lets you import a generated zip into a real WP install and visually compare it to the original Scorpion site.
+
+```
+docker compose up -d wpdb wordpress   # WP at http://localhost:8080
+cd backend
+npm run wp:import                     # imports the most-recent ready job into WP
+npm run wp:import -- --clean          # wipes existing content first, then imports
+npm run wp:import -- <jobId>          # import a specific job by id
+```
+The script installs WordPress (if not installed), activates the generated `scorpion-converted` theme, copies media into `wp-content/uploads/scorpion-migration/`, installs the `wordpress-importer` plugin, runs the WXR import, and pins the imported "home" page as `show_on_front`. Default credentials are `admin` / `admin` at `http://localhost:8080/wp-admin/`.
 
 ### CLI alternative — runs the full pipeline including the build
 ```
@@ -126,6 +139,7 @@ src/
     run-crawl.ts           # Steps 0 + 1
     run-extract.ts         # Full pipeline; --download to also fetch media
     run-migrations.ts      # `npm run db:migrate` entry point
+    import-to-wp.ts        # `npm run wp:import` — push the latest zip into the local docker WP
   index.ts                 # Express entry — runs migrations on boot then starts the server
 
 frontend/
@@ -187,6 +201,10 @@ The latest meaningful commits (newest first). `git log --oneline` for the full l
 
 12. **WebSocket route is not proxied through Next.** Next.js's `rewrites` only proxy HTTP. The browser connects directly to `ws://localhost:3001/api/jobs/:id/events` using `NEXT_PUBLIC_BACKEND_WS_URL` (default `ws://localhost:3001`). When we land behind a reverse proxy in deploy, set that env var to the public WS origin.
 
+13. **Page hierarchy assumes Scorpion's sitemap lists every level.** `pipeline/build/hierarchy.ts` walks paths and links children to parents via `post_parent`. If a Scorpion site has `/a/b/` in the sitemap without `/a/`, the child's `post_parent` falls back to 0 and the URL flattens to `/b/` instead of preserving `/a/b/`. The tennesseeplumbinginc.com test site has no such gaps. If it becomes a real issue, synthesize stub pages for the missing intermediates (out-of-scope for this slice).
+
+14. **SVG sprite icons are not yet downloaded.** Scorpion uses `<use data-href="/cms/svg/site/<id>.svg#flair">` for inline SVG sprites; the discovery pass walks `<img>` and `<source>` data-src/data-srcset but not `<use data-href>`. Visual impact on the test site is small (a few decorative flair shapes); add when it becomes noticeable.
+
 ---
 
 ## 6. Suggested next moves (pick one)
@@ -195,7 +213,7 @@ The latest meaningful commits (newest first). `git log --oneline` for the full l
 |---|---|---|
 | Review wizard frontend | large | The `frontend/app/job/[id]/review/*` placeholder routes still need real UI. With the WS channel in place we can drive it off live state instead of polling, and per-stage detail can be added to the channel as needed. |
 | Fixture-based parser tests | medium | Defensive — locks in current parsing behavior before the surface area grows. Use vitest + saved HTML fixtures from the test site. |
-| Import generated zip into a real WP install | small-ish | Highest "is this actually working?" signal. WP can run locally via `wp-env` or Docker; importer is `Tools → Import → WordPress`. Will reveal real-world fidelity gaps, including how the new nav menu items resolve. |
+| SVG sprite discovery (`<use data-href>`) | small | The remaining gap from the WP-validation pass. Add a third discovery pass alongside img/source data-src and rewrite at template + zone time. |
 | Add legacy framework pre-check | small | The deferred-but-documented stage. Spec is in `EXTRACTION.md`. Useful once we have real non-USC users hitting the tool. |
 
 ---

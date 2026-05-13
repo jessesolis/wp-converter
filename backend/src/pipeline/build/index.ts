@@ -15,6 +15,7 @@ import type {
   PageContentZones,
 } from "../parse";
 import { buildMigrationChecklist } from "./checklist";
+import { buildPageHierarchy } from "./hierarchy";
 import { buildPageTemplates } from "./templates";
 import {
   buildFunctionsPhp,
@@ -142,8 +143,10 @@ export async function buildWpPackage(
   const pageTitleByPath = new Map(
     inputs.ingest.pages.map((p) => [p.path, p.title]),
   );
-  const { templates, pathToSlug } = buildPageTemplates(
+  const hierarchy = buildPageHierarchy(inputs.ingest.pages);
+  const { templates } = buildPageTemplates(
     inputs.contentZones,
+    hierarchy,
     pageTitleByPath,
     urlMap,
   );
@@ -154,9 +157,8 @@ export async function buildWpPackage(
   const wxr = buildWxrXml({
     siteUrl: inputs.siteUrl,
     siteTitle: inputs.siteTitle,
-    pages: inputs.ingest.pages,
+    hierarchy,
     contentZones: inputs.contentZones,
-    pathToSlug,
     urlMap,
     navAnalysis: inputs.navAnalysis,
   });

@@ -36,17 +36,23 @@ export function collectMedia(crawl: CrawlResult): MediaInventory {
     if (page.status !== "ok" || !page.fullHtml) continue;
     const $ = cheerio.load(page.fullHtml);
 
-    $("img").each((_, el) => {
-      const $el = $(el);
-      const src = $el.attr("src");
-      bucketize(
-        toAbsolute(src, page.pageUrl),
-        images,
-        excludedImages,
-        siteHostname,
-      );
-      const srcset = $el.attr("srcset");
-      if (srcset) {
+    // Scorpion's lazy-load swaps `data-src`/`data-srcset` into `src`/`srcset`
+    // at runtime; the static markup carries the real URL in the data-* attrs
+    // and a 1x1 placeholder in src. Walk both pairs.
+    const collectImgLikeAttrs = (el: unknown) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const $el = $(el as any);
+      for (const attr of ["src", "data-src"] as const) {
+        bucketize(
+          toAbsolute($el.attr(attr), page.pageUrl),
+          images,
+          excludedImages,
+          siteHostname,
+        );
+      }
+      for (const attr of ["srcset", "data-srcset"] as const) {
+        const srcset = $el.attr(attr);
+        if (!srcset) continue;
         for (const u of parseSrcset(srcset)) {
           bucketize(
             toAbsolute(u, page.pageUrl),
@@ -56,29 +62,10 @@ export function collectMedia(crawl: CrawlResult): MediaInventory {
           );
         }
       }
-    });
+    };
 
-    $("source").each((_, el) => {
-      const $el = $(el);
-      const src = $el.attr("src");
-      bucketize(
-        toAbsolute(src, page.pageUrl),
-        images,
-        excludedImages,
-        siteHostname,
-      );
-      const srcset = $el.attr("srcset");
-      if (srcset) {
-        for (const u of parseSrcset(srcset)) {
-          bucketize(
-            toAbsolute(u, page.pageUrl),
-            images,
-            excludedImages,
-            siteHostname,
-          );
-        }
-      }
-    });
+    $("img").each((_, el) => collectImgLikeAttrs(el));
+    $("source").each((_, el) => collectImgLikeAttrs(el));
 
     $("a[href]").each((_, el) => {
       const abs = toAbsolute($(el).attr("href"), page.pageUrl);

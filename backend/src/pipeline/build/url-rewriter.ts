@@ -14,6 +14,12 @@ export function rewriteHtmlUrls(
   $("img, source, audio, video, iframe, embed, script").each((_, el) => {
     rewriteAttr($(el), "src", pageUrl, urlMap);
   });
+  // Scorpion uses `data-src` / `data-srcset` for lazy-load — the real URL
+  // lives in those attrs and the JS swaps them into src/srcset at runtime.
+  // Rewrite them too so downloaded assets resolve when the page loads.
+  $("img[data-src], source[data-src]").each((_, el) => {
+    rewriteAttr($(el), "data-src", pageUrl, urlMap);
+  });
   $("a, link").each((_, el) => {
     rewriteAttr($(el), "href", pageUrl, urlMap);
   });
@@ -26,6 +32,13 @@ export function rewriteHtmlUrls(
     if (!srcset) return;
     const rewritten = rewriteSrcset(srcset, pageUrl, urlMap);
     if (rewritten !== srcset) $el.attr("srcset", rewritten);
+  });
+  $("img[data-srcset], source[data-srcset]").each((_, el) => {
+    const $el = $(el);
+    const srcset = $el.attr("data-srcset");
+    if (!srcset) return;
+    const rewritten = rewriteSrcset(srcset, pageUrl, urlMap);
+    if (rewritten !== srcset) $el.attr("data-srcset", rewritten);
   });
   $("[style*='url(']").each((_, el) => {
     const $el = $(el);

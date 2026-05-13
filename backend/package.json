@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/scripts/run-migrations.ts",
-    "db:studio": "drizzle-kit studio"
+    "db:studio": "drizzle-kit studio",
+    "wp:import": "tsx src/scripts/import-to-wp.ts"
   },
   "dependencies": {
     "@types/archiver": "^7.0.0",

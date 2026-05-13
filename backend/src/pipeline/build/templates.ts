@@ -1,5 +1,6 @@
 import * as cheerio from "cheerio";
 import type { PageContentZones } from "../parse";
+import { normalizePath, type PageHierarchy } from "./hierarchy";
 import { rewriteHtmlUrls } from "./url-rewriter";
 import { sanitizeZoneId } from "./zone-meta";
 
@@ -14,27 +15,28 @@ export interface PageTemplateOutput {
 
 export interface BuiltTemplates {
   templates: PageTemplateOutput[];
-  // path → slug mapping so the WXR builder can reference templates/page-{slug}.php
-  pathToSlug: Map<string, string>;
 }
 
+// One PHP template per real page. Filename uses the flat templateSlug from
+// the hierarchy (e.g. `templates/page-residential-plumbing-services-drain-lines.php`)
+// to avoid filesystem collisions on deep nested URLs.
 export function buildPageTemplates(
-  pages: PageContentZones[],
+  zones: PageContentZones[],
+  hierarchy: PageHierarchy,
   pageTitleByPath: Map<string, string>,
   urlMap: Map<string, string>,
 ): BuiltTemplates {
-  const takenSlugs = new Set<string>();
   const templates: PageTemplateOutput[] = [];
-  const pathToSlug = new Map<string, string>();
 
-  for (const page of pages) {
-    const slug = allocateSlug(page.path, takenSlugs);
-    pathToSlug.set(page.path, slug);
-    const templateName = pageTitleByPath.get(page.path) || page.path || slug;
-    templates.push(buildPageTemplate(page, slug, templateName, urlMap));
+  for (const z of zones) {
+    const node = hierarchy.byPath.get(normalizePath(z.path));
+    if (!node) continue;
+    const templateName =
+      pageTitleByPath.get(z.path) || z.path || node.templateSlug;
+    templates.push(buildPageTemplate(z, node.templateSlug, templateName, urlMap));
   }
 
-  return { templates, pathToSlug };
+  return { templates };
 }
 
 function buildPageTemplate(
@@ -81,26 +83,6 @@ function buildPageTemplate(
     templateName,
     content: header + html,
   };
-}
-
-function allocateSlug(path: string, taken: Set<string>): string {
-  let base = path.replace(/^\/+/, "").replace(/\/+$/, "");
-  if (!base) base = "home";
-  base = base
-    .toLowerCase()
-    .replace(/[^a-z0-9-]/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  if (!base) base = "page";
-
-  let candidate = base;
-  let counter = 1;
-  while (taken.has(candidate)) {
-    candidate = `${base}-${counter}`;
-    counter++;
-  }
-  taken.add(candidate);
-  return candidate;
 }
 
 function escapePhpComment(value: string): string {

@@ -1,14 +1,13 @@
-import type { ScorpionPage } from "../ingest";
 import type { NavAnalysis, NavVariant, PageContentZones } from "../parse";
+import type { PageHierarchy, PageNode } from "./hierarchy";
 import { rewriteHtmlUrls } from "./url-rewriter";
 import { zoneMetaKey } from "./zone-meta";
 
 export interface WxrInputs {
   siteUrl: string;
   siteTitle: string;
-  pages: ScorpionPage[];
+  hierarchy: PageHierarchy;
   contentZones: PageContentZones[];
-  pathToSlug: Map<string, string>;
   urlMap: Map<string, string>;
   navAnalysis?: NavAnalysis;
 }
@@ -23,14 +22,14 @@ export function buildWxrXml(inputs: WxrInputs): string {
   );
   const pubDate = new Date().toUTCString();
 
-  const pageItems = inputs.pages.map((page, idx) =>
-    buildPageItem(page, idx, zonesByPath, inputs),
+  const pageItems = inputs.hierarchy.nodes.map((node) =>
+    buildPageItem(node, zonesByPath, inputs),
   );
 
   const dominantNav = pickDominantNavVariant(inputs.navAnalysis);
   const navTerm = dominantNav ? buildNavMenuTerm() : "";
   const navItems = dominantNav
-    ? buildNavMenuItems(dominantNav, inputs.pages.length)
+    ? buildNavMenuItems(dominantNav, inputs.hierarchy.maxPostId)
     : [];
 
   const itemsBlock = [...pageItems, ...navItems].join("\n");
@@ -67,13 +66,13 @@ ${termBlock}${itemsBlock}
 }
 
 function buildPageItem(
-  page: ScorpionPage,
-  idx: number,
+  node: PageNode,
   zonesByPath: Map<string, PageContentZones>,
   inputs: WxrInputs,
 ): string {
-  const slug = inputs.pathToSlug.get(page.path) ?? `page-${idx + 1}`;
-  const zones = zonesByPath.get(page.path);
+  const page = node.page;
+  const templateSlug = node.templateSlug;
+  const zones = zonesByPath.get(node.path) ?? zonesByPath.get(page.path);
   const pageUrl = zones?.pageUrl ?? page.canonical;
   const pubDate = new Date().toUTCString();
 
@@ -96,10 +95,21 @@ function buildPageItem(
     postmeta("_yoast_wpseo_canonical", page.canonical),
   ].filter((s) => s.length > 0);
 
-  const meta = [...zoneMeta, ...yoastMeta].join("\n");
+  // Also emit `_wp_page_template` as explicit postmeta — the standalone
+  // <wp:page_template> element is read by some WP importers and ignored by
+  // others (it's silently dropped by the popular wordpress-importer plugin
+  // in 2026). Postmeta is the reliable path.
+  const templateMeta = postmeta(
+    "_wp_page_template",
+    `templates/page-${templateSlug}.php`,
+  );
+
+  const meta = [...zoneMeta, templateMeta, ...yoastMeta]
+    .filter((s) => s.length > 0)
+    .join("\n");
 
   return `    <item>
-      <title>${xmlText(page.title || slug)}</title>
+      <title>${xmlText(page.title || node.postName)}</title>
       <link>${xmlText(page.canonical)}</link>
       <pubDate>${pubDate}</pubDate>
       <dc:creator><![CDATA[admin]]></dc:creator>
@@ -107,19 +117,19 @@ function buildPageItem(
       <description></description>
       <content:encoded><![CDATA[]]></content:encoded>
       <excerpt:encoded><![CDATA[]]></excerpt:encoded>
-      <wp:post_id>${idx + 1}</wp:post_id>
+      <wp:post_id>${node.postId}</wp:post_id>
       <wp:post_date><![CDATA[${formatMysqlDate(new Date())}]]></wp:post_date>
       <wp:post_date_gmt><![CDATA[${formatMysqlDate(new Date())}]]></wp:post_date_gmt>
       <wp:comment_status><![CDATA[closed]]></wp:comment_status>
       <wp:ping_status><![CDATA[closed]]></wp:ping_status>
-      <wp:post_name><![CDATA[${slug}]]></wp:post_name>
+      <wp:post_name><![CDATA[${node.postName}]]></wp:post_name>
       <wp:status><![CDATA[publish]]></wp:status>
-      <wp:post_parent>0</wp:post_parent>
-      <wp:menu_order>${idx}</wp:menu_order>
+      <wp:post_parent>${node.parentPostId}</wp:post_parent>
+      <wp:menu_order>0</wp:menu_order>
       <wp:post_type><![CDATA[page]]></wp:post_type>
       <wp:post_password><![CDATA[]]></wp:post_password>
       <wp:is_sticky>0</wp:is_sticky>
-      <wp:page_template><![CDATA[templates/page-${slug}.php]]></wp:page_template>
+      <wp:page_template><![CDATA[templates/page-${templateSlug}.php]]></wp:page_template>
 ${meta}
     </item>`;
 }

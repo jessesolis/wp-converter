@@ -31,6 +31,65 @@ services:
       timeout: 3s
       retries: 10
 
+  # ---- Local WordPress, for importing generated zips and comparing the result
+  # ---- against the live Scorpion site. Run `docker compose up -d wpdb wordpress`
+  # ---- then `npm run wp:import` from backend/.
+  wpdb:
+    image: mariadb:11
+    container_name: scorpion-wp-converter-wpdb
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: wp
+      MARIADB_USER: wp
+      MARIADB_PASSWORD: wp
+      MARIADB_ROOT_PASSWORD: wproot
+    volumes:
+      - scorpion_wp_db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  wordpress:
+    image: wordpress:6.7-php8.3-apache
+    container_name: scorpion-wp-converter-wp
+    restart: unless-stopped
+    depends_on:
+      wpdb:
+        condition: service_healthy
+    environment:
+      WORDPRESS_DB_HOST: wpdb:3306
+      WORDPRESS_DB_USER: wp
+      WORDPRESS_DB_PASSWORD: wp
+      WORDPRESS_DB_NAME: wp
+      WORDPRESS_DEBUG: "1"
+    ports:
+      - "8080:80"
+    volumes:
+      - scorpion_wp_data:/var/www/html
+
+  wpcli:
+    image: wordpress:cli-php8.3
+    container_name: scorpion-wp-converter-wpcli
+    depends_on:
+      wpdb:
+        condition: service_healthy
+      wordpress:
+        condition: service_started
+    environment:
+      WORDPRESS_DB_HOST: wpdb:3306
+      WORDPRESS_DB_USER: wp
+      WORDPRESS_DB_PASSWORD: wp
+      WORDPRESS_DB_NAME: wp
+    volumes:
+      - scorpion_wp_data:/var/www/html
+    # Only spun up on demand via `docker compose run --rm wpcli …`.
+    profiles:
+      - tools
+
 volumes:
   scorpion_pg_data:
   scorpion_redis_data:
+  scorpion_wp_data:
+  scorpion_wp_db_data:
