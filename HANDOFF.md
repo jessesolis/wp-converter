@@ -38,16 +38,31 @@ End-to-end conversion runs through a single `POST /api/jobs` call: ingest → cr
 
 ## 2. How to run
 
-Two terminals — backend on `:3001`, frontend on `:3001` proxies `/api/*` to it.
+Three terminals — Docker (Postgres + Redis), backend on `:3001`, frontend on `:3000`.
 
 ```
-# Terminal 1
+# Once per machine (Docker Desktop must be running)
+cp backend/.env.example backend/.env   # one-time; matches docker-compose defaults
+docker compose up -d                   # starts Postgres 16 + Redis 7
+# → containers `scorpion-wp-converter-postgres` and `…-redis`
+
+# Terminal 1 — backend
 cd backend && npm run dev
 # → "Backend listening on http://localhost:3001"
+#   On boot, the backend runs `drizzle/` migrations against $DATABASE_URL.
 
-# Terminal 2
+# Terminal 2 — frontend
 cd frontend && npm run dev
 # → "✓ Ready in <n>ms" — open http://localhost:3000
+```
+
+### Database / queue commands
+```
+npm run db:generate                 # generate a new migration after editing src/db/schema.ts
+npm run db:migrate                  # apply pending migrations (the backend also does this on boot)
+npm run db:studio                   # drizzle-kit studio against the local DB
+docker compose down                 # stop services (volumes persist)
+docker compose down -v              # stop + wipe the local DB
 ```
 
 ### CLI alternative — runs the full pipeline including the build
@@ -77,11 +92,18 @@ curl -s -X POST http://localhost:3001/api/jobs \
 ## 3. Where things live
 
 ```
-backend/src/
+backend/
+  drizzle/                 # Generated migrations (commit these)
+  drizzle.config.ts        # drizzle-kit config — points at src/db/schema.ts
+  .env.example             # Matches docker-compose defaults
+src/
   config/
+    env.ts                 # Reads DATABASE_URL / REDIS_URL / PORT / TEMP_DIR
     usc-versions.ts        # USC_VERSIONS const + UscVersion type — SOLE source of truth
   db/
-    job-store.ts           # In-memory Map<id, JobRecord>. Resets on backend restart.
+    schema.ts              # drizzle schema: `jobs` table + `job_status` pgEnum
+    client.ts              # pg Pool + drizzle instance + runMigrations()
+    job-store.ts           # ⚠ STILL in-memory Map — Postgres rewrite is Slice 2 (next)
   pipeline/
     ingest/                # Step 0
     crawl/                 # Step 1 (Puppeteer)
@@ -89,12 +111,13 @@ backend/src/
     download/              # Media + CSS/JS download
     build/                 # WP packaging
   routes/
-    jobs.ts                # POST /api/jobs (full pipeline) + GET /:id/export
+    jobs.ts                # POST /api/jobs (full pipeline, sync) + GET /:id/export
   scripts/
     run-ingest.ts          # Step 0 only
     run-crawl.ts           # Steps 0 + 1
     run-extract.ts         # Full pipeline; --download to also fetch media
-  index.ts                 # Express entry
+    run-migrations.ts      # `npm run db:migrate` entry point
+  index.ts                 # Express entry — runs migrations on boot then starts the server
 
 frontend/
   app/page.tsx             # Landing route (server component)
@@ -133,9 +156,9 @@ The latest meaningful commits (newest first). `git log --oneline` for the full l
 
 2. **Nav menus emitted as `custom`-type items.** WXR now contains the dominant nav variant as a `primary-menu` `<wp:term>` plus one `nav_menu_item` per `NavItem`. Items use `_menu_item_type=custom` with `_menu_item_url` set to the (relative) href, and depth → parent linkage via `_menu_item_menu_item_parent`. Hrefs that match internal pages are *not* linked to those pages' post_ids — they resolve at request time via the URL. Upgrading those to `_menu_item_type=post_type` / `_menu_item_object=page` references would give cleaner admin UX (menu items show as "Home", "About", etc., not raw URLs), but is a follow-up. Multi-variant nav still picks `variants[0]` (the most common) — the review wizard will need to surface a chooser when more than one variant is present.
 
-3. **Synchronous `POST /api/jobs` blocks 30–90 s.** Browser fetch handles it, but it's fragile. The intended swap is BullMQ + Postgres for the job lifecycle and WebSocket for live progress (per `ARCHITECTURE.md`). Until then, don't add features that lengthen the request further.
+3. **Synchronous `POST /api/jobs` blocks 30–90 s.** Browser fetch handles it, but it's fragile. The intended swap is BullMQ + WebSocket for live progress — Postgres is now wired (Slice 1, this commit) so persistence is ready; the next slices (Job-store → Postgres, then BullMQ worker, then WebSocket) deliver the async flow. Until then, don't add features that lengthen the request further.
 
-4. **In-memory job store resets on backend restart.** `db/job-store.ts` is a `Map`; the zip lives in `os.tmpdir()/scorpion-conversions/{jobId}/export.zip` but the store loses the path on restart. `GET /:id/export` will 404 after a restart even if the file exists on disk.
+4. **In-memory job store still in use.** `db/job-store.ts` remains a `Map` even though Postgres is now available — the table is created on every backend boot but no code reads or writes it yet. Slice 2 will rewrite the store on top of `drizzle.db`. Until then, the restart-loses-zip-path issue stands.
 
 5. **Legacy framework pre-check deferred.** `EXTRACTION.md` describes the lightweight HTTP fingerprint that should run before ingest to confirm USC-vs-non-USC and reject non-Scorpion sites cleanly. We chose to **omit this for now** — the tool currently assumes the user knows they're pointing at a USC site (the dropdown enforces the supported version floor) and will produce garbage if pointed at a non-USC site without a clear error. Implement when we want a friendlier rejection path.
 

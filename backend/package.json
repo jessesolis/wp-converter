@@ -7,7 +7,10 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx src/scripts/run-migrations.ts",
+    "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
     "@types/archiver": "^7.0.0",
@@ -15,6 +18,7 @@
     "bullmq": "^5.0.0",
     "cheerio": "^1.0.0",
     "dotenv": "^16.4.0",
+    "drizzle-orm": "^0.45.2",
     "express": "^4.21.0",
     "ioredis": "^5.4.0",
     "pg": "^8.13.0",
@@ -27,6 +31,7 @@
     "@types/node": "^20.14.0",
     "@types/pg": "^8.11.0",
     "@types/ws": "^8.5.0",
+    "drizzle-kit": "^0.31.10",
     "tsx": "^4.19.0",
     "typescript": "^5.5.0"
   }

@@ -1,9 +1,9 @@
-import "dotenv/config";
 import express from "express";
+import { env } from "./config/env";
+import { closeDb, runMigrations } from "./db/client";
 import { jobsRouter } from "./routes/jobs";
 
 const app = express();
-const port = process.env.PORT ? Number(process.env.PORT) : 3001;
 
 app.use(express.json());
 
@@ -13,6 +13,31 @@ app.get("/health", (_req, res) => {
 
 app.use("/api/jobs", jobsRouter);
 
-app.listen(port, () => {
-  console.log(`Backend listening on http://localhost:${port}`);
-});
+async function main() {
+  try {
+    await runMigrations();
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error(
+      `Could not run migrations against ${env.databaseUrl}.\n` +
+        `  ${detail}\n` +
+        `  Start the repo-root docker-compose ('docker compose up -d') or ` +
+        `update backend/.env with a reachable Postgres URL.`,
+    );
+    process.exit(1);
+  }
+
+  app.listen(env.port, () => {
+    console.log(`Backend listening on http://localhost:${env.port}`);
+  });
+}
+
+async function shutdown() {
+  await closeDb().catch(() => {});
+  process.exit(0);
+}
+
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
+
+main();
