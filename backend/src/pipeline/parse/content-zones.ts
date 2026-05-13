@@ -52,6 +52,3 @@ export function extractAllContentZones(
   return out;
 }
 
-export function toGutenbergClassicBlock(zone: ExtractedZone): string {
-  return `<!-- wp:freeform -->\n${zone.innerHtml}\n<!-- /wp:freeform -->`;
-}

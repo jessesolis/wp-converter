@@ -1,6 +1,7 @@
 import * as cheerio from "cheerio";
 import type { PageContentZones } from "../parse";
 import { rewriteHtmlUrls } from "./url-rewriter";
+import { sanitizeZoneId } from "./zone-meta";
 
 const PLACEHOLDER_PATTERN = /<!--\s*WP_CLASSIC_BLOCK_(\d+)\s*-->/g;
 
@@ -57,17 +58,16 @@ function buildPageTemplate(
   html = html.replace(/<\/head>/i, "<?php wp_head(); ?>\n</head>");
   html = html.replace(/<\/body>/i, "<?php wp_footer(); ?>\n</body>");
 
-  // Replace the first WP_CLASSIC_BLOCK placeholder with <?php the_content(); ?>
-  // and drop the rest. With one the_content() call WP will render every
-  // Classic block in DOM order at that single slot — exact per-zone
-  // placement is a known limitation flagged in MIGRATION-CHECKLIST.
-  let firstReplaced = false;
-  html = html.replace(PLACEHOLDER_PATTERN, () => {
-    if (!firstReplaced) {
-      firstReplaced = true;
-      return "<?php the_content(); ?>";
-    }
-    return "";
+  // Replace each WP_CLASSIC_BLOCK_<index> placeholder with a per-zone
+  // shortcode call. The zone HTML lives in postmeta `_scorpion_zone_<id>`
+  // (emitted by the WXR builder); the shortcode handler in functions.php
+  // echoes it. This preserves exact per-zone placement on multi-zone pages.
+  html = html.replace(PLACEHOLDER_PATTERN, (_match, indexStr: string) => {
+    const i = Number.parseInt(indexStr, 10);
+    const zone = page.zones[i];
+    if (!zone) return "";
+    const safeId = sanitizeZoneId(zone.zoneId);
+    return `<?php echo do_shortcode('[scorpion_zone id="${safeId}"]'); ?>`;
   });
 
   const header = `<?php

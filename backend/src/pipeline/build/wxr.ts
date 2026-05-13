@@ -1,6 +1,7 @@
 import type { ScorpionPage } from "../ingest";
 import type { NavAnalysis, NavVariant, PageContentZones } from "../parse";
 import { rewriteHtmlUrls } from "./url-rewriter";
+import { zoneMetaKey } from "./zone-meta";
 
 export interface WxrInputs {
   siteUrl: string;
@@ -74,21 +75,28 @@ function buildPageItem(
   const slug = inputs.pathToSlug.get(page.path) ?? `page-${idx + 1}`;
   const zones = zonesByPath.get(page.path);
   const pageUrl = zones?.pageUrl ?? page.canonical;
-  const blocks = (zones?.zones ?? [])
-    .map((z) => {
-      const innerHtml = rewriteHtmlUrls(z.innerHtml, pageUrl, inputs.urlMap);
-      return `<!-- wp:freeform -->\n${innerHtml}\n<!-- /wp:freeform -->`;
-    })
-    .join("\n\n");
   const pubDate = new Date().toUTCString();
 
-  const meta = [
+  // Each content zone is written to a per-page postmeta keyed by its
+  // sanitized zoneId. The page template emits a `[scorpion_zone id="..."]`
+  // shortcode at the original DOM position; the shortcode handler in
+  // functions.php reads the same key. If a page has two elements with the
+  // same id (invalid HTML but possible), last-write wins on the meta and
+  // both shortcode calls render the same content.
+  const zoneMeta = (zones?.zones ?? [])
+    .map((z) => {
+      const innerHtml = rewriteHtmlUrls(z.innerHtml, pageUrl, inputs.urlMap);
+      return postmeta(zoneMetaKey(z.zoneId), innerHtml);
+    })
+    .filter((s) => s.length > 0);
+
+  const yoastMeta = [
     postmeta("_yoast_wpseo_title", page.metaTitle),
     postmeta("_yoast_wpseo_metadesc", page.metaDescription),
     postmeta("_yoast_wpseo_canonical", page.canonical),
-  ]
-    .filter((s) => s.length > 0)
-    .join("\n");
+  ].filter((s) => s.length > 0);
+
+  const meta = [...zoneMeta, ...yoastMeta].join("\n");
 
   return `    <item>
       <title>${xmlText(page.title || slug)}</title>
@@ -97,7 +105,7 @@ function buildPageItem(
       <dc:creator><![CDATA[admin]]></dc:creator>
       <guid isPermaLink="false">${xmlText(page.canonical)}</guid>
       <description></description>
-      <content:encoded>${cdata(blocks)}</content:encoded>
+      <content:encoded><![CDATA[]]></content:encoded>
       <excerpt:encoded><![CDATA[]]></excerpt:encoded>
       <wp:post_id>${idx + 1}</wp:post_id>
       <wp:post_date><![CDATA[${formatMysqlDate(new Date())}]]></wp:post_date>

@@ -22,7 +22,7 @@ End-to-end conversion runs through a single `POST /api/jobs` call: ingest → cr
 | WP build — CSS/JS download | done | `backend/src/pipeline/download/assets.ts` |
 | WP build — URL rewriting (HTML + CSS) | done | `backend/src/pipeline/build/url-rewriter.ts` |
 | WP build — Theme files (`style.css`, `functions.php`, `index.php`) | done | `backend/src/pipeline/build/theme.ts` |
-| WP build — Per-page PHP templates | done (one `the_content()` per template — see §5) | `backend/src/pipeline/build/templates.ts` |
+| WP build — Per-page PHP templates | done (per-zone `[scorpion_zone id]` shortcode at each original DOM slot) | `backend/src/pipeline/build/templates.ts` |
 | WP build — WXR XML (pages + Classic blocks + Yoast meta + nav menu) | done | `backend/src/pipeline/build/wxr.ts` |
 | WP build — Migration checklist | done | `backend/src/pipeline/build/checklist.ts` |
 | WP build — Zip | done (archiver v7, pinned — see §5) | `backend/src/pipeline/build/zip.ts` |
@@ -163,7 +163,7 @@ The latest meaningful commits (newest first). `git log --oneline` for the full l
 
 ## 5. Known limitations / things to surface in any new session
 
-1. **Single `the_content()` per template.** `pipeline/build/templates.ts` replaces the *first* `<!-- WP_CLASSIC_BLOCK_n -->` placeholder with `<?php the_content(); ?>` and strips the rest. WordPress then renders **every** Classic block at that one slot in DOM order. Pages with multiple content zones lose exact placement. Already documented in the generated `MIGRATION-CHECKLIST.md` and is the top-priority fix if you want visual accuracy on multi-zone pages.
+1. ~~**Single `the_content()` per template.**~~ Resolved by the `[scorpion_zone id="…"]` shortcode. Each placeholder in the template now becomes `<?php echo do_shortcode('[scorpion_zone id="<zoneId>"]'); ?>`, and each zone's HTML is written to a per-page postmeta key `_scorpion_zone_<zoneId>` in the WXR. `functions.php` registers a shortcode handler that reads the meta. Verified on the test site: 89 pages × 673 total zones, each shortcode call placed at its original DOM position (e.g. home page has 17 zones spread across its sections, not stacked at one slot). Tradeoff: `post_content` is empty, so editing a zone from the standard WP editor isn't possible — use a Custom Fields plugin / ACF group, or revisit if editor-native editing matters more than placement accuracy.
 
 2. **Nav menus emitted as `custom`-type items.** WXR now contains the dominant nav variant as a `primary-menu` `<wp:term>` plus one `nav_menu_item` per `NavItem`. Items use `_menu_item_type=custom` with `_menu_item_url` set to the (relative) href, and depth → parent linkage via `_menu_item_menu_item_parent`. Hrefs that match internal pages are *not* linked to those pages' post_ids — they resolve at request time via the URL. Upgrading those to `_menu_item_type=post_type` / `_menu_item_object=page` references would give cleaner admin UX (menu items show as "Home", "About", etc., not raw URLs), but is a follow-up. Multi-variant nav still picks `variants[0]` (the most common) — the review wizard will need to surface a chooser when more than one variant is present.
 
@@ -193,7 +193,6 @@ The latest meaningful commits (newest first). `git log --oneline` for the full l
 
 | Slice | Size | Why |
 |---|---|---|
-| Multi-`the_content()` placement | medium | Investigate Gutenberg `wp:html` or custom shortcodes per placeholder so each content zone renders in place; highest-impact for visual accuracy now that the plumbing is in. |
 | Review wizard frontend | large | The `frontend/app/job/[id]/review/*` placeholder routes still need real UI. With the WS channel in place we can drive it off live state instead of polling, and per-stage detail can be added to the channel as needed. |
 | Fixture-based parser tests | medium | Defensive — locks in current parsing behavior before the surface area grows. Use vitest + saved HTML fixtures from the test site. |
 | Import generated zip into a real WP install | small-ish | Highest "is this actually working?" signal. WP can run locally via `wp-env` or Docker; importer is `Tools → Import → WordPress`. Will reveal real-world fidelity gaps, including how the new nav menu items resolve. |

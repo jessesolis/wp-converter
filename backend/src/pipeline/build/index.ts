@@ -229,8 +229,5 @@ function collectLimitations(
       `${mediaOutcome.failedCount} media asset(s) failed to download. Examples: ${sample}.`,
     );
   }
-  out.push(
-    "Per-page content placement: WordPress renders all Classic blocks at the position of the first WP_CLASSIC_BLOCK placeholder. Pages with multiple content zones may need manual template editing for exact placement.",
-  );
   return out;
 }

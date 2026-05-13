@@ -46,6 +46,23 @@ ${enqueueStyles || "    // (no stylesheets discovered)"}
 ${enqueueScripts || "    // (no scripts discovered)"}
 }
 add_action('wp_enqueue_scripts', 'scorpion_converted_enqueue_assets');
+
+/**
+ * [scorpion_zone id="…"] — renders one content zone at its original DOM
+ * position in the page template. Each zone's HTML is stored in postmeta
+ * '_scorpion_zone_<id>' by the WXR importer; the template emits one
+ * shortcode call per placeholder so multi-zone pages keep exact placement.
+ */
+function scorpion_zone_shortcode($atts) {
+    $atts = shortcode_atts(array('id' => ''), $atts, 'scorpion_zone');
+    $id = trim((string) $atts['id']);
+    if ($id === '') {
+        return '';
+    }
+    $value = get_post_meta(get_the_ID(), '_scorpion_zone_' . $id, true);
+    return is_string($value) ? $value : '';
+}
+add_shortcode('scorpion_zone', 'scorpion_zone_shortcode');
 `;
 }
 
