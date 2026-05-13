@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 import { USC_VERSIONS, type UscVersion } from "@/lib/usc-versions";
 
@@ -9,42 +10,13 @@ interface JobStartFormState {
   uscVersion: UscVersion | "";
 }
 
-interface IngestPage {
-  path: string;
-  title: string;
-  metaTitle: string;
-  metaDescription: string;
-  canonical: string;
-}
-
-interface BuildStats {
-  ok: number;
-  failed: number;
-  totalBytes: number;
-}
-
-interface JobSuccessResponse {
+interface JobEnqueuedResponse {
   jobId: string;
-  status: "ready";
-  ingest: {
-    siteUrl: string;
-    pages: IngestPage[];
-    contentZoneIds: string[];
-  };
-  build: {
-    downloadUrl: string;
-    byteSize: number;
-    pageCount: number;
-    zoneCount: number;
-    css: BuildStats;
-    js: BuildStats;
-    media: BuildStats;
-  };
+  status: string;
 }
 
 interface JobErrorResponse {
   error: string;
-  jobId?: string;
   category?: string;
   retryable?: boolean;
 }
@@ -56,9 +28,9 @@ const INITIAL_STATE: JobStartFormState = {
 };
 
 export function JobStartForm() {
+  const router = useRouter();
   const [form, setForm] = useState<JobStartFormState>(INITIAL_STATE);
   const [submitting, setSubmitting] = useState(false);
-  const [result, setResult] = useState<JobSuccessResponse | null>(null);
   const [error, setError] = useState<JobErrorResponse | null>(null);
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
@@ -73,30 +45,23 @@ export function JobStartForm() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(form),
       });
-      const body = (await response.json()) as JobSuccessResponse | JobErrorResponse;
+      const body = (await response.json()) as
+        | JobEnqueuedResponse
+        | JobErrorResponse;
       if (!response.ok) {
         setError(body as JobErrorResponse);
-      } else {
-        setResult(body as JobSuccessResponse);
+        setSubmitting(false);
+        return;
       }
+      const { jobId } = body as JobEnqueuedResponse;
+      router.push(`/job/${jobId}`);
     } catch (err) {
       setError({
         error:
           err instanceof Error ? err.message : "Network error reaching backend",
       });
-    } finally {
       setSubmitting(false);
     }
-  }
-
-  function reset() {
-    setForm(INITIAL_STATE);
-    setResult(null);
-    setError(null);
-  }
-
-  if (result) {
-    return <IngestResultPanel result={result} onReset={reset} />;
   }
 
   return (
@@ -180,7 +145,7 @@ export function JobStartForm() {
 
       {error && (
         <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
-          <p className="font-medium">Ingest failed</p>
+          <p className="font-medium">Could not start conversion</p>
           <p className="mt-1 text-red-700">{error.error}</p>
           {error.category && (
             <p className="mt-1 text-xs text-red-600">
@@ -196,132 +161,8 @@ export function JobStartForm() {
         disabled={submitting}
         className="inline-flex w-full items-center justify-center rounded-md bg-gray-900 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60"
       >
-        {submitting
-          ? "Running conversion (this may take a minute)…"
-          : "Start conversion"}
+        {submitting ? "Queuing conversion…" : "Start conversion"}
       </button>
     </form>
-  );
-}
-
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / 1024 / 1024).toFixed(1)} MB`;
-}
-
-function IngestResultPanel({
-  result,
-  onReset,
-}: {
-  result: JobSuccessResponse;
-  onReset: () => void;
-}) {
-  const { jobId, ingest, build } = result;
-  return (
-    <div className="space-y-6">
-      <div className="space-y-1">
-        <p className="text-xs font-medium uppercase tracking-wider text-green-700">
-          Conversion complete
-        </p>
-        <p className="text-sm text-gray-600">
-          Crawled <code className="text-gray-900">{ingest.siteUrl}</code> and
-          assembled a WordPress package.
-        </p>
-      </div>
-
-      <a
-        href={build.downloadUrl}
-        className="block rounded-md border border-gray-900 bg-gray-900 px-4 py-3 text-center text-sm font-medium text-white shadow-sm transition hover:bg-gray-800"
-      >
-        Download WordPress package ({formatBytes(build.byteSize)})
-      </a>
-
-      <dl className="grid grid-cols-3 gap-3 text-sm">
-        <div className="rounded-md border border-gray-200 bg-gray-50 p-3">
-          <dt className="text-xs uppercase tracking-wider text-gray-500">Pages</dt>
-          <dd className="mt-1 text-xl font-semibold text-gray-900">
-            {build.pageCount}
-          </dd>
-        </div>
-        <div className="rounded-md border border-gray-200 bg-gray-50 p-3">
-          <dt className="text-xs uppercase tracking-wider text-gray-500">
-            Content zones
-          </dt>
-          <dd className="mt-1 text-xl font-semibold text-gray-900">
-            {build.zoneCount}
-          </dd>
-        </div>
-        <div className="rounded-md border border-gray-200 bg-gray-50 p-3">
-          <dt className="text-xs uppercase tracking-wider text-gray-500">
-            Zone IDs
-          </dt>
-          <dd className="mt-1 text-xl font-semibold text-gray-900">
-            {ingest.contentZoneIds.length}
-          </dd>
-        </div>
-      </dl>
-
-      <section>
-        <h3 className="text-sm font-medium text-gray-900">Assets downloaded</h3>
-        <dl className="mt-2 grid grid-cols-3 gap-3 text-sm">
-          <AssetStat label="CSS" stats={build.css} />
-          <AssetStat label="JS" stats={build.js} />
-          <AssetStat label="Media" stats={build.media} />
-        </dl>
-      </section>
-
-      {ingest.pages.length > 0 && (
-        <section>
-          <h3 className="text-sm font-medium text-gray-900">
-            First {Math.min(ingest.pages.length, 10)} pages
-          </h3>
-          <ul className="mt-2 divide-y divide-gray-200 rounded-md border border-gray-200">
-            {ingest.pages.slice(0, 10).map((p) => (
-              <li key={p.canonical} className="px-3 py-2 text-sm">
-                <p className="font-medium text-gray-900">{p.title || p.path}</p>
-                <p className="truncate text-xs text-gray-500">{p.canonical}</p>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-
-      <p className="text-xs text-gray-400">
-        Job ID: <code>{jobId}</code>
-      </p>
-
-      <button
-        type="button"
-        onClick={onReset}
-        className="inline-flex w-full items-center justify-center rounded-md border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-900 shadow-sm transition hover:bg-gray-50"
-      >
-        Start another
-      </button>
-    </div>
-  );
-}
-
-function AssetStat({
-  label,
-  stats,
-}: {
-  label: string;
-  stats: BuildStats;
-}) {
-  const failedNote = stats.failed > 0 ? ` (${stats.failed} failed)` : "";
-  return (
-    <div className="rounded-md border border-gray-200 bg-gray-50 p-3">
-      <dt className="text-xs uppercase tracking-wider text-gray-500">{label}</dt>
-      <dd className="mt-1 font-semibold text-gray-900">
-        {stats.ok}
-        {failedNote && (
-          <span className="ml-1 text-xs font-normal text-amber-700">
-            {failedNote}
-          </span>
-        )}
-      </dd>
-      <dd className="text-xs text-gray-500">{formatBytes(stats.totalBytes)}</dd>
-    </div>
   );
 }

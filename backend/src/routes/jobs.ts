@@ -1,24 +1,8 @@
 import { Router, type Request, type Response } from "express";
 import { stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { isUscVersion, type UscVersion } from "../config/usc-versions";
-import { createJob, getJob, updateJob } from "../db/job-store";
-import { buildWpPackage } from "../pipeline/build";
-import { crawlSite } from "../pipeline/crawl";
-import {
-  IngestFetchError,
-  IngestParseError,
-  ingestWpConverter,
-  type IngestResult,
-} from "../pipeline/ingest";
-import {
-  analyzeForms,
-  analyzeNavigation,
-  collectAssets,
-  collectMedia,
-  extractAllContentZones,
-} from "../pipeline/parse";
+import { createJob, getJob } from "../db/job-store";
+import { conversionQueue } from "../queue";
 
 export const jobsRouter = Router();
 
@@ -63,14 +47,6 @@ function validateBody(body: unknown): Validation {
   };
 }
 
-function serializeIngest(result: IngestResult) {
-  return {
-    siteUrl: result.siteUrl,
-    pages: result.pages,
-    contentZoneIds: [...result.contentZoneIds],
-  };
-}
-
 function slugifyForFilename(value: string): string {
   const cleaned = value
     .replace(/[^a-zA-Z0-9._-]/g, "-")
@@ -88,78 +64,49 @@ jobsRouter.post("/", async (req: Request, res: Response) => {
 
   const job = await createJob(validated.input);
 
-  try {
-    await updateJob(job.id, { status: "ingest" });
-    const ingest = await ingestWpConverter(validated.input.siteUrl);
-
-    await updateJob(job.id, { status: "crawl" });
-    const crawl = await crawlSite(ingest);
-
-    await updateJob(job.id, { status: "parse" });
-    const assets = collectAssets(crawl);
-    const media = collectMedia(crawl);
-    const contentZones = extractAllContentZones(crawl, ingest.contentZoneIds);
-    const formAnalysis = analyzeForms(crawl);
-    const navAnalysis = analyzeNavigation(crawl);
-
-    await updateJob(job.id, { status: "build" });
-    const jobRootDir = join(tmpdir(), "scorpion-conversions", job.id);
-    const buildOutput = await buildWpPackage({
-      jobRootDir,
-      siteUrl: ingest.siteUrl,
-      siteTitle: validated.input.siteTitle,
-      ingest,
-      crawl,
-      assets,
-      media,
-      contentZones,
-      formAnalysis,
-      navAnalysis,
-    });
-
-    await updateJob(job.id, {
-      status: "ready",
-      outputPath: buildOutput.zipPath,
-      completedAt: new Date(),
-    });
-
-    res.status(201).json({
+  // The BullMQ jobId mirrors the DB UUID so this enqueue is idempotent across
+  // retries from the client side.
+  await conversionQueue.add(
+    "conversion",
+    {
       jobId: job.id,
-      status: "ready",
-      ingest: serializeIngest(ingest),
-      build: {
-        downloadUrl: `/api/jobs/${job.id}/export`,
-        byteSize: buildOutput.zipByteSize,
-        pageCount: buildOutput.pageCount,
-        zoneCount: buildOutput.zoneCount,
-        css: buildOutput.css,
-        js: buildOutput.js,
-        media: buildOutput.mediaDownload,
-      },
-    });
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : "Unknown error";
-    await updateJob(job.id, {
-      status: "failed",
-      error: detail,
-      completedAt: new Date(),
-    });
+      siteUrl: job.input.siteUrl,
+      siteTitle: job.input.siteTitle,
+      uscVersion: job.input.uscVersion,
+    },
+    {
+      jobId: job.id,
+      attempts: 3,
+      backoff: { type: "exponential", delay: 2000 },
+      removeOnComplete: { age: 60 * 60 * 24 },
+      removeOnFail: { age: 60 * 60 * 24 * 7 },
+    },
+  );
 
-    if (err instanceof IngestFetchError) {
-      res.status(502).json({
-        error: detail,
-        jobId: job.id,
-        category: err.category,
-        retryable: err.retryable,
-      });
-      return;
-    }
-    if (err instanceof IngestParseError) {
-      res.status(502).json({ error: detail, jobId: job.id });
-      return;
-    }
-    res.status(500).json({ error: detail, jobId: job.id });
+  res.status(202).json({
+    jobId: job.id,
+    status: job.status,
+  });
+});
+
+jobsRouter.get("/:id", async (req: Request, res: Response) => {
+  const job = await getJob(req.params.id);
+  if (!job) {
+    res.status(404).json({ error: "Job not found" });
+    return;
   }
+  res.json({
+    jobId: job.id,
+    status: job.status,
+    siteUrl: job.input.siteUrl,
+    siteTitle: job.input.siteTitle,
+    uscVersion: job.input.uscVersion,
+    createdAt: job.createdAt,
+    completedAt: job.completedAt,
+    error: job.error,
+    downloadUrl:
+      job.status === "ready" ? `/api/jobs/${job.id}/export` : null,
+  });
 });
 
 jobsRouter.get("/:id/export", async (req: Request, res: Response) => {

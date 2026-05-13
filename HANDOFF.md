@@ -26,10 +26,12 @@ End-to-end conversion runs through a single `POST /api/jobs` call: ingest → cr
 | WP build — WXR XML (pages + Classic blocks + Yoast meta + nav menu) | done | `backend/src/pipeline/build/wxr.ts` |
 | WP build — Migration checklist | done | `backend/src/pipeline/build/checklist.ts` |
 | WP build — Zip | done (archiver v7, pinned — see §5) | `backend/src/pipeline/build/zip.ts` |
-| Route — `POST /api/jobs` (full pipeline, sync) | done | `backend/src/routes/jobs.ts` |
+| Route — `POST /api/jobs` (enqueue, returns 202 + jobId) | done | `backend/src/routes/jobs.ts` |
+| Route — `GET /api/jobs/:id` (status snapshot) | done | same |
 | Route — `GET /api/jobs/:id/export` (stream zip) | done | same |
-| Frontend — landing form with USC version dropdown | done | `frontend/components/job-start-form.tsx` |
-| Frontend — result panel with download button | done | same |
+| Async pipeline — BullMQ worker (in-band, concurrency 1, 3-attempt retry w/ exponential backoff) | done | `backend/src/queue/worker.ts` + `backend/src/pipeline/run.ts` |
+| Frontend — landing form (redirects to `/job/[id]`) | done | `frontend/components/job-start-form.tsx` |
+| Frontend — progress page (polls `GET /api/jobs/:id`, shows stage list + download) | done — WebSocket upgrade is Slice 4 | `frontend/app/job/[id]/job-progress.tsx` |
 
 ### Verified on the canonical test site
 `https://www.tennesseeplumbinginc.com/` — runs in ~30–45 s, produces a ~4.7 MB zip with 204 files (88 page templates, 23 stylesheets, 55 JS files, 19 media files, valid WXR XML, migration checklist).
@@ -110,8 +112,12 @@ src/
     parse/                 # Steps 2/3 (assets), 4 (content zones), 5 (nav), 6 (media), 7 (forms)
     download/              # Media + CSS/JS download
     build/                 # WP packaging
+    run.ts                 # runConversion(): single pipeline orchestration the worker calls
+  queue/
+    index.ts               # BullMQ Queue + shared ioredis connection + QUEUE_NAME
+    worker.ts              # Worker (concurrency 1, 3-attempt retry w/ exponential backoff)
   routes/
-    jobs.ts                # POST /api/jobs (full pipeline, sync) + GET /:id/export
+    jobs.ts                # POST /api/jobs (enqueue, 202) + GET /:id + GET /:id/export
   scripts/
     run-ingest.ts          # Step 0 only
     run-crawl.ts           # Steps 0 + 1
@@ -121,8 +127,10 @@ src/
 
 frontend/
   app/page.tsx             # Landing route (server component)
-  app/job/[id]/...         # Placeholders for the eventual review wizard / preview / export pages
-  components/job-start-form.tsx  # Client component — form + result panel + download link
+  app/job/[id]/page.tsx    # SSR shell that renders <JobProgress jobId=…>
+  app/job/[id]/job-progress.tsx  # Client component — polls GET /api/jobs/:id, renders stage list + download
+  app/job/[id]/{review,preview,export}/...  # Placeholders for the eventual wizard
+  components/job-start-form.tsx  # Client — POST /api/jobs then router.push(`/job/[id]`)
   lib/usc-versions.ts      # MIRROR of backend USC_VERSIONS (keep in sync; will collapse to API later)
   next.config.mjs          # Rewrites /api/* → http://localhost:3001/api/*
 ```
@@ -156,7 +164,7 @@ The latest meaningful commits (newest first). `git log --oneline` for the full l
 
 2. **Nav menus emitted as `custom`-type items.** WXR now contains the dominant nav variant as a `primary-menu` `<wp:term>` plus one `nav_menu_item` per `NavItem`. Items use `_menu_item_type=custom` with `_menu_item_url` set to the (relative) href, and depth → parent linkage via `_menu_item_menu_item_parent`. Hrefs that match internal pages are *not* linked to those pages' post_ids — they resolve at request time via the URL. Upgrading those to `_menu_item_type=post_type` / `_menu_item_object=page` references would give cleaner admin UX (menu items show as "Home", "About", etc., not raw URLs), but is a follow-up. Multi-variant nav still picks `variants[0]` (the most common) — the review wizard will need to surface a chooser when more than one variant is present.
 
-3. **Synchronous `POST /api/jobs` blocks 30–90 s.** Browser fetch handles it, but it's fragile. The intended swap is BullMQ + WebSocket for live progress — Postgres is wired (Slice 1) and the job-store is now DB-backed (Slice 2, this commit). The next slices (BullMQ worker, then WebSocket) deliver the async flow. Until then, don't add features that lengthen the request further.
+3. ~~**Synchronous `POST /api/jobs` blocks 30–90 s.**~~ Resolved in Slice 3. POST now returns 202 + `{ jobId, status: "queued" }` in <100 ms; the BullMQ worker runs the pipeline; the frontend polls `GET /api/jobs/:id` every second. Slice 4 will replace polling with WebSocket so the page updates without the 1-s lag and so we can stream per-stage detail later.
 
 4. ~~**In-memory job store resets on backend restart.**~~ Resolved in Slice 2. `db/job-store.ts` now reads/writes the `jobs` table via drizzle. Re-verified end-to-end: a job inserted in one backend process is downloadable after the process restarts.
 
@@ -170,7 +178,7 @@ The latest meaningful commits (newest first). `git log --oneline` for the full l
 
 9. **No tests.** No vitest, no fixture HTML for the parsers, no integration test that round-trips a fake site. End-to-end verification today is the `run-extract.ts` CLI + the test site. Worth adding fixture-based unit tests for the parsers (ingest, content-zones, forms, nav) before they accrete more behavior.
 
-10. **`frontend/app/job/[id]/...` routes are placeholder `<main />` files.** The eventual live-progress page, review wizard (pages / nav / zones / media / forms / styles), preview, and export flows all need to be built. Currently the entire UX lives on the landing form's result panel.
+10. **Most `frontend/app/job/[id]/...` routes are still placeholder `<main />` files.** The progress page is live (`app/job/[id]/page.tsx` + `job-progress.tsx`), but the review wizard (pages / nav / zones / media / forms / styles), preview, and export flows are still empty. They will be built after Slice 4 (WebSocket-driven progress) so we can drive the wizard off live state instead of polling.
 
 ---
 
@@ -178,7 +186,7 @@ The latest meaningful commits (newest first). `git log --oneline` for the full l
 
 | Slice | Size | Why |
 |---|---|---|
-| BullMQ + Postgres for async jobs | large | Removes the sync-request constraint; unblocks live-progress UI and the review wizard |
+| WebSocket live-progress (Slice 4 of the async refactor) | small-medium | Replaces the 1-s polling on `/job/[id]` with a push stream; sets up the channel the review wizard will use later |
 | Multi-`the_content()` placement | medium | Investigate Gutenberg `wp:html` or custom shortcodes per placeholder so each content zone renders in place; highest-impact for visual accuracy |
 | Fixture-based parser tests | medium | Defensive — locks in current parsing behavior before the surface area grows. Use vitest + saved HTML fixtures from the test site |
 | Import generated zip into a real WP install | small-ish | Has the highest "is this actually working?" signal. WP can run locally via `wp-env` or Docker; importer is `Tools → Import → WordPress`. Will reveal real-world fidelity gaps |

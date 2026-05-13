@@ -1,7 +1,10 @@
 import express from "express";
 import { env } from "./config/env";
 import { closeDb, runMigrations } from "./db/client";
+import { closeQueue } from "./queue";
+import { createConversionWorker } from "./queue/worker";
 import { jobsRouter } from "./routes/jobs";
+import type { Worker } from "bullmq";
 
 const app = express();
 
@@ -12,6 +15,9 @@ app.get("/health", (_req, res) => {
 });
 
 app.use("/api/jobs", jobsRouter);
+
+let worker: Worker | null = null;
+let server: ReturnType<typeof app.listen> | null = null;
 
 async function main() {
   try {
@@ -27,12 +33,24 @@ async function main() {
     process.exit(1);
   }
 
-  app.listen(env.port, () => {
+  worker = createConversionWorker();
+  worker.on("ready", () => console.log("[worker] ready"));
+  worker.on("error", (err) => console.error("[worker] error:", err));
+
+  server = app.listen(env.port, () => {
     console.log(`Backend listening on http://localhost:${env.port}`);
   });
 }
 
 async function shutdown() {
+  console.log("Shutting down…");
+  if (server) {
+    await new Promise<void>((resolve) => server!.close(() => resolve()));
+  }
+  if (worker) {
+    await worker.close().catch(() => {});
+  }
+  await closeQueue().catch(() => {});
   await closeDb().catch(() => {});
   process.exit(0);
 }
