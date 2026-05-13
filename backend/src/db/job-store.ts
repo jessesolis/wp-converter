@@ -1,15 +1,9 @@
-import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import type { UscVersion } from "../config/usc-versions";
-import type { IngestResult } from "../pipeline/ingest";
+import { db } from "./client";
+import { jobs, type JobRow } from "./schema";
 
-export type JobStatus =
-  | "queued"
-  | "ingesting"
-  | "crawling"
-  | "parsing"
-  | "building"
-  | "ready"
-  | "failed";
+export type JobStatus = JobRow["status"];
 
 export interface JobInput {
   siteUrl: string;
@@ -22,39 +16,61 @@ export interface JobRecord {
   status: JobStatus;
   input: JobInput;
   createdAt: Date;
-  updatedAt: Date;
-  ingestResult?: IngestResult;
-  exportPath?: string;
-  exportSize?: number;
-  error?: string;
+  completedAt: Date | null;
+  outputPath: string | null;
+  error: string | null;
 }
 
-const store = new Map<string, JobRecord>();
+export interface JobPatch {
+  status?: JobStatus;
+  outputPath?: string | null;
+  completedAt?: Date | null;
+  error?: string | null;
+}
 
-export function createJob(input: JobInput): JobRecord {
-  const now = new Date();
-  const record: JobRecord = {
-    id: randomUUID(),
-    status: "queued",
-    input,
-    createdAt: now,
-    updatedAt: now,
+function rowToRecord(row: JobRow): JobRecord {
+  return {
+    id: row.id,
+    status: row.status,
+    input: {
+      siteUrl: row.siteUrl,
+      siteTitle: row.siteTitle,
+      uscVersion: row.uscVersion as UscVersion,
+    },
+    createdAt: row.createdAt,
+    completedAt: row.completedAt,
+    outputPath: row.outputPath,
+    error: row.error,
   };
-  store.set(record.id, record);
-  return record;
 }
 
-export function updateJob(
+export async function createJob(input: JobInput): Promise<JobRecord> {
+  const [row] = await db
+    .insert(jobs)
+    .values({
+      status: "queued",
+      siteUrl: input.siteUrl,
+      siteTitle: input.siteTitle,
+      uscVersion: input.uscVersion,
+    })
+    .returning();
+  return rowToRecord(row);
+}
+
+export async function updateJob(
   id: string,
-  patch: Partial<Omit<JobRecord, "id" | "createdAt">>,
-): JobRecord {
-  const existing = store.get(id);
-  if (!existing) throw new Error(`Job not found: ${id}`);
-  const updated: JobRecord = { ...existing, ...patch, updatedAt: new Date() };
-  store.set(id, updated);
-  return updated;
+  patch: JobPatch,
+): Promise<JobRecord> {
+  const [row] = await db
+    .update(jobs)
+    .set(patch)
+    .where(eq(jobs.id, id))
+    .returning();
+  if (!row) throw new Error(`Job not found: ${id}`);
+  return rowToRecord(row);
 }
 
-export function getJob(id: string): JobRecord | undefined {
-  return store.get(id);
+export async function getJob(id: string): Promise<JobRecord | undefined> {
+  const [row] = await db.select().from(jobs).where(eq(jobs.id, id)).limit(1);
+  return row ? rowToRecord(row) : undefined;
 }

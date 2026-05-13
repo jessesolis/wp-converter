@@ -103,7 +103,7 @@ src/
   db/
     schema.ts              # drizzle schema: `jobs` table + `job_status` pgEnum
     client.ts              # pg Pool + drizzle instance + runMigrations()
-    job-store.ts           # ⚠ STILL in-memory Map — Postgres rewrite is Slice 2 (next)
+    job-store.ts           # DB-backed: createJob / updateJob / getJob via drizzle
   pipeline/
     ingest/                # Step 0
     crawl/                 # Step 1 (Puppeteer)
@@ -156,9 +156,9 @@ The latest meaningful commits (newest first). `git log --oneline` for the full l
 
 2. **Nav menus emitted as `custom`-type items.** WXR now contains the dominant nav variant as a `primary-menu` `<wp:term>` plus one `nav_menu_item` per `NavItem`. Items use `_menu_item_type=custom` with `_menu_item_url` set to the (relative) href, and depth → parent linkage via `_menu_item_menu_item_parent`. Hrefs that match internal pages are *not* linked to those pages' post_ids — they resolve at request time via the URL. Upgrading those to `_menu_item_type=post_type` / `_menu_item_object=page` references would give cleaner admin UX (menu items show as "Home", "About", etc., not raw URLs), but is a follow-up. Multi-variant nav still picks `variants[0]` (the most common) — the review wizard will need to surface a chooser when more than one variant is present.
 
-3. **Synchronous `POST /api/jobs` blocks 30–90 s.** Browser fetch handles it, but it's fragile. The intended swap is BullMQ + WebSocket for live progress — Postgres is now wired (Slice 1, this commit) so persistence is ready; the next slices (Job-store → Postgres, then BullMQ worker, then WebSocket) deliver the async flow. Until then, don't add features that lengthen the request further.
+3. **Synchronous `POST /api/jobs` blocks 30–90 s.** Browser fetch handles it, but it's fragile. The intended swap is BullMQ + WebSocket for live progress — Postgres is wired (Slice 1) and the job-store is now DB-backed (Slice 2, this commit). The next slices (BullMQ worker, then WebSocket) deliver the async flow. Until then, don't add features that lengthen the request further.
 
-4. **In-memory job store still in use.** `db/job-store.ts` remains a `Map` even though Postgres is now available — the table is created on every backend boot but no code reads or writes it yet. Slice 2 will rewrite the store on top of `drizzle.db`. Until then, the restart-loses-zip-path issue stands.
+4. ~~**In-memory job store resets on backend restart.**~~ Resolved in Slice 2. `db/job-store.ts` now reads/writes the `jobs` table via drizzle. Re-verified end-to-end: a job inserted in one backend process is downloadable after the process restarts.
 
 5. **Legacy framework pre-check deferred.** `EXTRACTION.md` describes the lightweight HTTP fingerprint that should run before ingest to confirm USC-vs-non-USC and reject non-Scorpion sites cleanly. We chose to **omit this for now** — the tool currently assumes the user knows they're pointing at a USC site (the dropdown enforces the supported version floor) and will produce garbage if pointed at a non-USC site without a clear error. Implement when we want a friendlier rejection path.
 

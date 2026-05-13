@@ -86,24 +86,23 @@ jobsRouter.post("/", async (req: Request, res: Response) => {
     return;
   }
 
-  const job = createJob(validated.input);
+  const job = await createJob(validated.input);
 
   try {
-    updateJob(job.id, { status: "ingesting" });
+    await updateJob(job.id, { status: "ingest" });
     const ingest = await ingestWpConverter(validated.input.siteUrl);
-    updateJob(job.id, { ingestResult: ingest });
 
-    updateJob(job.id, { status: "crawling" });
+    await updateJob(job.id, { status: "crawl" });
     const crawl = await crawlSite(ingest);
 
-    updateJob(job.id, { status: "parsing" });
+    await updateJob(job.id, { status: "parse" });
     const assets = collectAssets(crawl);
     const media = collectMedia(crawl);
     const contentZones = extractAllContentZones(crawl, ingest.contentZoneIds);
     const formAnalysis = analyzeForms(crawl);
     const navAnalysis = analyzeNavigation(crawl);
 
-    updateJob(job.id, { status: "building" });
+    await updateJob(job.id, { status: "build" });
     const jobRootDir = join(tmpdir(), "scorpion-conversions", job.id);
     const buildOutput = await buildWpPackage({
       jobRootDir,
@@ -118,10 +117,10 @@ jobsRouter.post("/", async (req: Request, res: Response) => {
       navAnalysis,
     });
 
-    updateJob(job.id, {
+    await updateJob(job.id, {
       status: "ready",
-      exportPath: buildOutput.zipPath,
-      exportSize: buildOutput.zipByteSize,
+      outputPath: buildOutput.zipPath,
+      completedAt: new Date(),
     });
 
     res.status(201).json({
@@ -140,7 +139,11 @@ jobsRouter.post("/", async (req: Request, res: Response) => {
     });
   } catch (err) {
     const detail = err instanceof Error ? err.message : "Unknown error";
-    updateJob(job.id, { status: "failed", error: detail });
+    await updateJob(job.id, {
+      status: "failed",
+      error: detail,
+      completedAt: new Date(),
+    });
 
     if (err instanceof IngestFetchError) {
       res.status(502).json({
@@ -160,25 +163,25 @@ jobsRouter.post("/", async (req: Request, res: Response) => {
 });
 
 jobsRouter.get("/:id/export", async (req: Request, res: Response) => {
-  const job = getJob(req.params.id);
+  const job = await getJob(req.params.id);
   if (!job) {
     res.status(404).json({ error: "Job not found" });
     return;
   }
-  if (job.status !== "ready" || !job.exportPath) {
+  if (job.status !== "ready" || !job.outputPath) {
     res
       .status(409)
       .json({ error: `Export not ready (status: ${job.status})` });
     return;
   }
   try {
-    await stat(job.exportPath);
+    await stat(job.outputPath);
   } catch {
     res.status(410).json({ error: "Export file no longer exists" });
     return;
   }
   const filename = `${slugifyForFilename(job.input.siteTitle)}-wordpress.zip`;
-  res.download(job.exportPath, filename, (err) => {
+  res.download(job.outputPath, filename, (err) => {
     if (err && !res.headersSent) {
       res.status(500).json({ error: "Download failed" });
     }
