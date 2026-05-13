@@ -63,6 +63,123 @@ function scorpion_zone_shortcode($atts) {
     return is_string($value) ? $value : '';
 }
 add_shortcode('scorpion_zone', 'scorpion_zone_shortcode');
+
+/**
+ * "Scorpion Zones" admin metabox — surfaces every '_scorpion_zone_<id>'
+ * postmeta key on the page as a labeled textarea so admins can edit zone
+ * HTML directly from the page editor. The original Scorpion markup lives
+ * in '_scorpion_zone_<id>__original' (written once on import, never
+ * overwritten); each zone has a per-zone Revert checkbox that copies the
+ * original back over the editable value on save.
+ */
+function scorpion_converted_register_zones_metabox() {
+    add_meta_box(
+        'scorpion-zones',
+        'Scorpion Zones',
+        'scorpion_converted_render_zones_metabox',
+        'page',
+        'normal',
+        'high'
+    );
+}
+add_action('add_meta_boxes', 'scorpion_converted_register_zones_metabox');
+
+function scorpion_converted_render_zones_metabox($post) {
+    $meta = get_post_meta($post->ID);
+    $zone_keys = array();
+    foreach (array_keys($meta) as $key) {
+        if (strpos($key, '_scorpion_zone_') !== 0) {
+            continue;
+        }
+        if (substr($key, -strlen('__original')) === '__original') {
+            continue;
+        }
+        $zone_keys[] = $key;
+    }
+    sort($zone_keys);
+
+    wp_nonce_field('scorpion_zones_save', 'scorpion_zones_nonce');
+
+    if (empty($zone_keys)) {
+        echo '<p><em>No Scorpion zones recorded for this page.</em></p>';
+        return;
+    }
+
+    echo '<p style="margin:0 0 1em;color:#555;">Each block below is a content region extracted from the original Scorpion page, rendered at its DOM position via <code>[scorpion_zone id="…"]</code>. Edit the raw HTML to update the live page. To restore the original markup, check <strong>Revert to original</strong> and click <strong>Update</strong>.</p>';
+
+    foreach ($zone_keys as $key) {
+        $zone_id = substr($key, strlen('_scorpion_zone_'));
+        $current = get_post_meta($post->ID, $key, true);
+        if (!is_string($current)) {
+            $current = '';
+        }
+        $has_original = metadata_exists('post', $post->ID, $key . '__original');
+        $field_name = 'scorpion_zone_' . $zone_id;
+        $revert_name = 'scorpion_zone_revert_' . $zone_id;
+
+        echo '<details style="margin:0 0 0.75em;border:1px solid #ddd;border-radius:4px;">';
+        echo '<summary style="padding:0.5em 0.75em;background:#f6f7f7;cursor:pointer;font-family:monospace;font-size:13px;">' . esc_html($zone_id) . '</summary>';
+        echo '<div style="padding:0.75em;">';
+        echo '<textarea name="' . esc_attr($field_name) . '" rows="10" style="width:100%;font-family:monospace;font-size:12px;line-height:1.4;">' . esc_textarea($current) . '</textarea>';
+        if ($has_original) {
+            echo '<label style="display:block;margin-top:0.5em;font-size:13px;">';
+            echo '<input type="checkbox" name="' . esc_attr($revert_name) . '" value="1" /> ';
+            echo 'Revert to original on save (discards edits to this zone)';
+            echo '</label>';
+        } else {
+            echo '<p style="margin-top:0.5em;font-size:12px;color:#888;"><em>No original snapshot recorded — Revert unavailable.</em></p>';
+        }
+        echo '</div></details>';
+    }
+}
+
+function scorpion_converted_save_zones($post_id) {
+    if (!isset($_POST['scorpion_zones_nonce'])) {
+        return;
+    }
+    if (!wp_verify_nonce(wp_unslash($_POST['scorpion_zones_nonce']), 'scorpion_zones_save')) {
+        return;
+    }
+    if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) {
+        return;
+    }
+    if (!current_user_can('edit_post', $post_id)) {
+        return;
+    }
+
+    $meta = get_post_meta($post_id);
+    foreach (array_keys($meta) as $key) {
+        if (strpos($key, '_scorpion_zone_') !== 0) {
+            continue;
+        }
+        if (substr($key, -strlen('__original')) === '__original') {
+            continue;
+        }
+
+        $zone_id = substr($key, strlen('_scorpion_zone_'));
+        $revert_name = 'scorpion_zone_revert_' . $zone_id;
+        $field_name = 'scorpion_zone_' . $zone_id;
+
+        if (!empty($_POST[$revert_name])) {
+            $original = get_post_meta($post_id, $key . '__original', true);
+            if (is_string($original)) {
+                update_post_meta($post_id, $key, $original);
+            }
+            continue;
+        }
+
+        if (array_key_exists($field_name, $_POST)) {
+            // Admins editing the converted theme — store the raw HTML exactly
+            // as typed. wp_unslash() reverses WP's magic-quotes; we
+            // deliberately do NOT call wp_kses_post() because the source
+            // HTML uses arbitrary classes / data-* attrs that strict
+            // sanitisation would strip.
+            $new_value = wp_unslash($_POST[$field_name]);
+            update_post_meta($post_id, $key, $new_value);
+        }
+    }
+}
+add_action('save_post_page', 'scorpion_converted_save_zones');
 `;
 }
 

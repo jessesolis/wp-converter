@@ -144,11 +144,13 @@ export async function buildWpPackage(
     inputs.ingest.pages.map((p) => [p.path, p.title]),
   );
   const hierarchy = buildPageHierarchy(inputs.ingest.pages);
+  const iconMap = inputs.ingest.iconMap;
   const { templates } = buildPageTemplates(
     inputs.contentZones,
     hierarchy,
     pageTitleByPath,
     urlMap,
+    iconMap,
   );
   for (const t of templates) {
     await writeFile(join(templatesDir, t.filename), t.content);
@@ -160,6 +162,7 @@ export async function buildWpPackage(
     hierarchy,
     contentZones: inputs.contentZones,
     urlMap,
+    iconMap,
     navAnalysis: inputs.navAnalysis,
   });
   await writeFile(join(outputDir, "import.xml"), wxr);

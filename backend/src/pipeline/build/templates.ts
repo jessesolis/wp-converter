@@ -1,6 +1,7 @@
 import * as cheerio from "cheerio";
 import type { PageContentZones } from "../parse";
 import { normalizePath, type PageHierarchy } from "./hierarchy";
+import { substituteSvgIcons } from "./svg-icons";
 import { rewriteHtmlUrls } from "./url-rewriter";
 import { sanitizeZoneId } from "./zone-meta";
 
@@ -25,6 +26,7 @@ export function buildPageTemplates(
   hierarchy: PageHierarchy,
   pageTitleByPath: Map<string, string>,
   urlMap: Map<string, string>,
+  iconMap: Map<string, string>,
 ): BuiltTemplates {
   const templates: PageTemplateOutput[] = [];
 
@@ -33,7 +35,9 @@ export function buildPageTemplates(
     if (!node) continue;
     const templateName =
       pageTitleByPath.get(z.path) || z.path || node.templateSlug;
-    templates.push(buildPageTemplate(z, node.templateSlug, templateName, urlMap));
+    templates.push(
+      buildPageTemplate(z, node.templateSlug, templateName, urlMap, iconMap),
+    );
   }
 
   return { templates };
@@ -44,8 +48,10 @@ function buildPageTemplate(
   slug: string,
   templateName: string,
   urlMap: Map<string, string>,
+  iconMap: Map<string, string>,
 ): PageTemplateOutput {
   let html = rewriteHtmlUrls(page.template, page.pageUrl, urlMap);
+  html = substituteSvgIcons(html, iconMap);
 
   // Strip externally-loaded CSS/JS — WordPress wp_enqueue handles those.
   // Strip <style> blocks too — the orchestrator writes them out as a

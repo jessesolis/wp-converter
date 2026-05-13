@@ -7,8 +7,8 @@ export async function ingestWpConverter(
 ): Promise<IngestResult> {
   const normalized = new URL(siteUrl).origin;
   const html = await fetchWpConverterHtml(normalized);
-  const { pages, contentZoneIds } = parseWpConverter(html, normalized);
-  return { siteUrl: normalized, pages, contentZoneIds };
+  const { pages, contentZoneIds, iconMap } = parseWpConverter(html, normalized);
+  return { siteUrl: normalized, pages, contentZoneIds, iconMap };
 }
 
 export type { IngestResult, ScorpionPage } from "./types";

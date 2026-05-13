@@ -20,3 +20,11 @@ export function sanitizeZoneId(id: string): string {
 export function zoneMetaKey(zoneId: string): string {
   return `_scorpion_zone_${sanitizeZoneId(zoneId)}`;
 }
+
+// Read-only snapshot of the original Scorpion markup. Used by the Revert
+// checkbox in the "Scorpion Zones" admin metabox. The double-underscore
+// separator keeps the suffix grep-distinct from a zoneId that happens to
+// contain "_original".
+export function zoneMetaOriginalKey(zoneId: string): string {
+  return `${zoneMetaKey(zoneId)}__original`;
+}

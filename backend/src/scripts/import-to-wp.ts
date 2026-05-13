@@ -252,12 +252,16 @@ async function main() {
   // listing unless show_on_front is changed. Pick the page named "home"
   // (matches our slug allocation for the `/` path) and pin it.
   console.log("\nPinning front page to the imported home page…");
+  // Filter to top-level (parent=0) so we don't accidentally pick up a
+  // /style-guide/home/ or similar sub-page that happens to share the
+  // post_name "home" within its own parent.
   const homeIdRaw = wpCli(
     [
       "post",
       "list",
       "--post_type=page",
       "--name=home",
+      "--post_parent=0",
       "--field=ID",
       "--format=ids",
     ],

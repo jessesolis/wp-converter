@@ -44,7 +44,7 @@ ${limitations}
 
 ## Notes
 - All stylesheets and JS are enqueued globally via \`functions.php\`. Conditional per-page enqueueing is deferred as a future optimisation.
-- Each content zone is stored as a postmeta key \`_scorpion_zone_<zoneId>\` and rendered at its original DOM position via the \`[scorpion_zone id="…"]\` shortcode registered in \`functions.php\`. To edit a zone, use a Custom Fields plugin (or add an ACF field group) — the standard editor's main content area is intentionally empty so multi-zone pages render with exact placement.
+- Each content zone is stored as a postmeta key \`_scorpion_zone_<zoneId>\` and rendered at its original DOM position via the \`[scorpion_zone id="…"]\` shortcode registered in \`functions.php\`. To edit a zone, open the page in wp-admin — the **Scorpion Zones** metabox lists every zone for the page as a labeled textarea. The original Scorpion markup is preserved in \`_scorpion_zone_<zoneId>__original\` so each zone can be reverted via the metabox's per-zone Revert checkbox.
 - Media URLs in templates and zone meta have been rewritten to \`/wp-content/uploads/scorpion-migration/{filename}\`. URLs the tool could not resolve to a downloaded file remain at their original absolute Scorpion-domain location.
 `;
 }

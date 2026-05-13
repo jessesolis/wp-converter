@@ -1,7 +1,8 @@
 import type { NavAnalysis, NavVariant, PageContentZones } from "../parse";
 import type { PageHierarchy, PageNode } from "./hierarchy";
+import { substituteSvgIcons } from "./svg-icons";
 import { rewriteHtmlUrls } from "./url-rewriter";
-import { zoneMetaKey } from "./zone-meta";
+import { zoneMetaKey, zoneMetaOriginalKey } from "./zone-meta";
 
 export interface WxrInputs {
   siteUrl: string;
@@ -9,6 +10,7 @@ export interface WxrInputs {
   hierarchy: PageHierarchy;
   contentZones: PageContentZones[];
   urlMap: Map<string, string>;
+  iconMap: Map<string, string>;
   navAnalysis?: NavAnalysis;
 }
 
@@ -74,7 +76,15 @@ function buildPageItem(
   const templateSlug = node.templateSlug;
   const zones = zonesByPath.get(node.path) ?? zonesByPath.get(page.path);
   const pageUrl = zones?.pageUrl ?? page.canonical;
-  const pubDate = new Date().toUTCString();
+  // Stagger each item's post_date by node.postId seconds. The
+  // wordpress-importer plugin's `post_exists()` dedupe check uses
+  // post_title + post_date as the uniqueness key, so multiple Scorpion
+  // pages that share a human-readable title (e.g. "Drain Cleaning" under
+  // both /residential-plumbing-services/drain-lines/ and
+  // /locations/kingsport/) would otherwise collapse into a single WP post.
+  const itemDate = new Date(Date.now() - node.postId * 1000);
+  const sqlDate = formatMysqlDate(itemDate);
+  const pubDate = itemDate.toUTCString();
 
   // Each content zone is written to a per-page postmeta keyed by its
   // sanitized zoneId. The page template emits a `[scorpion_zone id="..."]`
@@ -83,9 +93,16 @@ function buildPageItem(
   // same id (invalid HTML but possible), last-write wins on the meta and
   // both shortcode calls render the same content.
   const zoneMeta = (zones?.zones ?? [])
-    .map((z) => {
-      const innerHtml = rewriteHtmlUrls(z.innerHtml, pageUrl, inputs.urlMap);
-      return postmeta(zoneMetaKey(z.zoneId), innerHtml);
+    .flatMap((z) => {
+      let innerHtml = rewriteHtmlUrls(z.innerHtml, pageUrl, inputs.urlMap);
+      innerHtml = substituteSvgIcons(innerHtml, inputs.iconMap);
+      // Two entries per zone: the editable copy that the [scorpion_zone]
+      // shortcode reads, and a `__original` snapshot the "Scorpion Zones"
+      // admin metabox uses for its per-zone Revert button.
+      return [
+        postmeta(zoneMetaKey(z.zoneId), innerHtml),
+        postmeta(zoneMetaOriginalKey(z.zoneId), innerHtml),
+      ];
     })
     .filter((s) => s.length > 0);
 
@@ -118,8 +135,8 @@ function buildPageItem(
       <content:encoded><![CDATA[]]></content:encoded>
       <excerpt:encoded><![CDATA[]]></excerpt:encoded>
       <wp:post_id>${node.postId}</wp:post_id>
-      <wp:post_date><![CDATA[${formatMysqlDate(new Date())}]]></wp:post_date>
-      <wp:post_date_gmt><![CDATA[${formatMysqlDate(new Date())}]]></wp:post_date_gmt>
+      <wp:post_date><![CDATA[${sqlDate}]]></wp:post_date>
+      <wp:post_date_gmt><![CDATA[${sqlDate}]]></wp:post_date_gmt>
       <wp:comment_status><![CDATA[closed]]></wp:comment_status>
       <wp:ping_status><![CDATA[closed]]></wp:ping_status>
       <wp:post_name><![CDATA[${node.postName}]]></wp:post_name>
@@ -205,8 +222,12 @@ function buildNavMenuItem(args: {
   parentId: number;
 }): string {
   const { postId, menuOrder, title, url, parentId } = args;
-  const pubDate = new Date().toUTCString();
-  const sqlDate = formatMysqlDate(new Date());
+  // Same dedupe-avoidance dance as page items — stagger by postId so the
+  // importer doesn't collapse nav items that happen to share a title
+  // (e.g. multiple "Contact Us" links in different menu locations).
+  const itemDate = new Date(Date.now() - postId * 1000);
+  const pubDate = itemDate.toUTCString();
+  const sqlDate = formatMysqlDate(itemDate);
   const meta = [
     postmetaRaw("_menu_item_type", "custom"),
     postmetaRaw("_menu_item_menu_item_parent", String(parentId)),

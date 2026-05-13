@@ -70,16 +70,64 @@ docker compose down -v              # stop + wipe the local DB
 ```
 
 ### Local WordPress for end-to-end validation
-A second docker-compose service group (WordPress 6.7 + MariaDB 11 + wp-cli) lets you import a generated zip into a real WP install and visually compare it to the original Scorpion site.
+A second docker-compose service group (WordPress 6.7 + MariaDB 11 + wp-cli) lets you import a generated zip into a real WP install and visually compare it to the original Scorpion site. Everything below assumes Docker Desktop is running.
 
+#### One-time setup
 ```
-docker compose up -d wpdb wordpress   # WP at http://localhost:8080
-cd backend
-npm run wp:import                     # imports the most-recent ready job into WP
-npm run wp:import -- --clean          # wipes existing content first, then imports
-npm run wp:import -- <jobId>          # import a specific job by id
+docker compose up -d wpdb wordpress
+# Wait ~10 s for MariaDB to become healthy; you can verify with:
+docker compose ps
+# wpdb should read "Up (healthy)" and wordpress should read "Up".
 ```
-The script installs WordPress (if not installed), activates the generated `scorpion-converted` theme, copies media into `wp-content/uploads/scorpion-migration/`, installs the `wordpress-importer` plugin, runs the WXR import, and pins the imported "home" page as `show_on_front`. Default credentials are `admin` / `admin` at `http://localhost:8080/wp-admin/`.
+
+WordPress is now reachable at **http://localhost:8080/** — on first visit it shows the WP installer, but the import script below installs it automatically. The `wpcli` service is declared under the `tools` profile in docker-compose.yml so it doesn't start with `up -d`; it's invoked on demand via `docker compose run --rm wpcli …` (the import script handles that for you).
+
+#### Generate + import in one go
+1. Run a conversion through the normal flow (landing form on http://localhost:3000 OR `curl -X POST /api/jobs` OR `npx tsx src/scripts/run-extract.ts <site_url>` with the backend running). Wait for status `ready`.
+2. From `backend/`:
+   ```
+   npm run wp:import                # imports the most recent ready job
+   npm run wp:import -- --clean     # wipe existing pages/media first, then import
+   npm run wp:import -- <jobId>     # import a specific job by id
+   ```
+3. Open **http://localhost:8080/** to see the converted site. The home page is auto-pinned as the WP front page.
+4. Admin: **http://localhost:8080/wp-admin/** with `admin` / `admin`.
+
+#### What the script does (so you can debug it)
+`backend/src/scripts/import-to-wp.ts` runs the following sequence against the WP container:
+
+| # | Step | wp-cli invocation |
+|---|---|---|
+| 1 | Locate the job's `output/` dir on the host (sibling of `export.zip` in `os.tmpdir()/scorpion-conversions/<jobId>/`) | — |
+| 2 | Bring up `wpdb` + `wordpress` if not already running | `docker compose up -d wpdb wordpress` |
+| 3 | Wait for WP HTTP on :8080 | `fetch /wp-includes/version.php` |
+| 4 | Install WordPress on first run (admin / admin / admin@example.test, postname permalinks) | `wp core install` + `wp rewrite structure /%postname%/ --hard` |
+| 5 | (`--clean` only) Empty existing content + drop the Scorpion media folder | `wp site empty --yes` + `docker exec rm -rf …/uploads/scorpion-migration` |
+| 6 | Copy the generated theme into the container | `docker cp <jobOutput>/theme/scorpion-converted/ wp:/var/www/html/wp-content/themes/` |
+| 7 | Activate the theme | `wp theme activate scorpion-converted` |
+| 8 | Copy media into `wp-content/uploads/scorpion-migration/` | `docker cp <jobOutput>/media/. wp:…/uploads/scorpion-migration/` |
+| 9 | Install + activate the WordPress Importer plugin | `wp plugin install wordpress-importer --force` then `wp plugin activate` |
+| 10 | Copy + import the WXR (assigns authors automatically) | `docker cp <jobOutput>/import.xml wp:/var/www/html/scorpion-import.xml` then `wp import … --authors=create` |
+| 11 | Pin the imported `home` page as the front page | `wp option update show_on_front page` + `wp option update page_on_front <homeId>` |
+
+All file paths inside the container resolve under `/var/www/html` (the standard wordpress image). Anything `docker cp`'d in is then `chown`-ed to `www-data:www-data` so PHP can serve it.
+
+#### Manual wp-cli access
+If you need to poke around outside the import script:
+```
+docker compose run --rm --user 33:33 wpcli wp --path=/var/www/html post list --post_type=page
+docker compose run --rm --user 33:33 wpcli wp --path=/var/www/html db query "SELECT post_name, post_parent FROM wp_posts WHERE post_type='page' AND post_status='publish' LIMIT 20"
+```
+The `--user 33:33` keeps file writes owned by `www-data`. `--path=/var/www/html` is required because wp-cli's working dir inside the container is `/var/www/html` but the auto-detection sometimes fails when run via `docker compose run`.
+
+**Heads up on git-bash:** invoking wp-cli args like `--path=/var/www/html` from git-bash sometimes triggers MSYS auto-conversion to a Windows path (`C:/Users/.../var/www/html/`). Run wp-cli commands from PowerShell instead, or escape via `MSYS_NO_PATHCONV=1`. The TS import script uses `spawnSync("docker", …)` directly so it isn't affected.
+
+#### Tear down
+```
+docker compose stop wordpress wpdb              # leave volumes (data persists for next session)
+docker compose down                             # stop all containers (volumes persist)
+docker compose down -v                          # nuke volumes too (next `wp:import` starts fresh)
+```
 
 ### CLI alternative — runs the full pipeline including the build
 ```
