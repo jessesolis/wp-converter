@@ -1,5 +1,6 @@
 import type { NavAnalysis, NavVariant, PageContentZones } from "../parse";
 import type { PageHierarchy, PageNode } from "./hierarchy";
+import { stripBlockedDomainContent } from "./strip-blocked-domains";
 import { substituteSvgIcons } from "./svg-icons";
 import { rewriteHtmlUrls } from "./url-rewriter";
 import { zoneMetaKey, zoneMetaOriginalKey } from "./zone-meta";
@@ -96,6 +97,7 @@ function buildPageItem(
     .flatMap((z) => {
       let innerHtml = rewriteHtmlUrls(z.innerHtml, pageUrl, inputs.urlMap);
       innerHtml = substituteSvgIcons(innerHtml, inputs.iconMap);
+      innerHtml = stripBlockedDomainContent(innerHtml);
       // Two entries per zone: the editable copy that the [scorpion_zone]
       // shortcode reads, and a `__original` snapshot the "Scorpion Zones"
       // admin metabox uses for its per-zone Revert button.

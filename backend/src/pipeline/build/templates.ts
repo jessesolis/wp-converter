@@ -1,6 +1,7 @@
 import * as cheerio from "cheerio";
 import type { PageContentZones } from "../parse";
 import { normalizePath, type PageHierarchy } from "./hierarchy";
+import { stripBlockedDomainContent } from "./strip-blocked-domains";
 import { substituteSvgIcons } from "./svg-icons";
 import { rewriteHtmlUrls } from "./url-rewriter";
 import { sanitizeZoneId } from "./zone-meta";
@@ -52,6 +53,7 @@ function buildPageTemplate(
 ): PageTemplateOutput {
   let html = rewriteHtmlUrls(page.template, page.pageUrl, urlMap);
   html = substituteSvgIcons(html, iconMap);
+  html = stripBlockedDomainContent(html);
 
   // Strip externally-loaded CSS/JS — WordPress wp_enqueue handles those.
   // Strip <style> blocks too — the orchestrator writes them out as a

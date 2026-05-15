@@ -16,6 +16,7 @@ import type {
 } from "../parse";
 import { buildMigrationChecklist } from "./checklist";
 import { buildPageHierarchy } from "./hierarchy";
+import { stripBlockedDomainsFromJs } from "./strip-blocked-domains";
 import { buildPageTemplates } from "./templates";
 import {
   buildFunctionsPhp,
@@ -113,6 +114,15 @@ export async function buildWpPackage(
   for (const r of jsOutcome.results) {
     if (r.status === "ok" && r.filename) jsFilenameByUrl.set(r.url, r.filename);
   }
+
+  // Neutralise references to third-party domains we don't want running on
+  // the converted site (e.g. AudioEye, which is tied to the original
+  // Scorpion license). Replaces matching string literals inside JS with
+  // empty strings so dynamic `n.src = "https://…audioeye.com/…"` style
+  // injections become no-ops. Runs before the USC discovery pass so the
+  // discoverer doesn't pick up dependencies of stripped scripts.
+  // Configured list lives in backend/src/config/stripped-domains.ts.
+  await stripBlockedDomainsFromJs(jsDir);
 
   // Discover, fetch, and rewrite Scorpion's runtime-loaded `/common/usc/p/`
   // utility scripts. Without this pass, dynamic require2() calls inside
