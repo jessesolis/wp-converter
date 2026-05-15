@@ -28,17 +28,28 @@ export async function crawlSite(
     const results: CrawledPage[] = new Array(ingest.pages.length);
     let next = 0;
 
+    // Each worker gets its own isolated browser context. Puppeteer's network
+    // event listeners interfere across parallel pages in a shared context —
+    // CSS / JS response events go missing on some pages — so per-worker
+    // contexts are required for per-page resource capture to be reliable.
+    // Pages within a single worker run serially, so they don't interfere
+    // with each other.
     async function worker(): Promise<void> {
-      while (true) {
-        const cursor = next++;
-        if (cursor >= indexed.length) return;
-        const { page, index } = indexed[cursor];
-        results[index] = await crawlPage(
-          browser,
-          page.canonical,
-          page.path,
-          timeoutMs,
-        );
+      const context = await browser.createBrowserContext();
+      try {
+        while (true) {
+          const cursor = next++;
+          if (cursor >= indexed.length) return;
+          const { page, index } = indexed[cursor];
+          results[index] = await crawlPage(
+            context,
+            page.canonical,
+            page.path,
+            timeoutMs,
+          );
+        }
+      } finally {
+        await context.close();
       }
     }
 

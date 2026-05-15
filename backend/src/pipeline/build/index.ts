@@ -24,6 +24,7 @@ import {
   THEME_SLUG,
 } from "./theme";
 import { rewriteCssUrls } from "./url-rewriter";
+import { discoverAndRewriteUscUtilityScripts } from "./usc-utility-scripts";
 import { buildWxrXml } from "./wxr";
 import { zipDirectory } from "./zip";
 
@@ -102,27 +103,111 @@ export async function buildWpPackage(
     }
   }
 
-  // Inline <style> blocks (theme tokens etc) get concatenated into a
-  // single stylesheet that is enqueued globally.
-  const inlineFilename = "inline-bundle.css";
-  if (inputs.assets.inlineStyles.length > 0) {
-    const inlineCss = inputs.assets.inlineStyles
-      .map((style, i) => `/* === inline block ${i + 1} === */\n${style}`)
+  // Downloaded asset URL → on-disk filename, derived once for per-page
+  // handle mapping below.
+  const cssFilenameByUrl = new Map<string, string>();
+  for (const r of cssOutcome.results) {
+    if (r.status === "ok" && r.filename) cssFilenameByUrl.set(r.url, r.filename);
+  }
+  const jsFilenameByUrl = new Map<string, string>();
+  for (const r of jsOutcome.results) {
+    if (r.status === "ok" && r.filename) jsFilenameByUrl.set(r.url, r.filename);
+  }
+
+  // Discover, fetch, and rewrite Scorpion's runtime-loaded `/common/usc/p/`
+  // utility scripts. Without this pass, dynamic require2() calls inside
+  // downloaded JS bundles 404 against the WP host because the literal path
+  // points back at the original site root. Run after the main JS download
+  // so we can scan every bundle's contents for the dependency list.
+  const jsWpPathPrefix = `/wp-content/themes/${THEME_SLUG}/js`;
+  const uscOutcome = await discoverAndRewriteUscUtilityScripts({
+    siteUrl: inputs.siteUrl,
+    jsDir,
+    jsWpPathPrefix,
+    jsFilenameByUrl,
+  });
+  for (const [url, filename] of uscOutcome.newlyDownloaded) {
+    jsFilenameByUrl.set(url, filename);
+    // Also surface in the urlMap so any HTML still pointing at the
+    // original /common/usc/p/<name>.js absolute URL gets rewritten by the
+    // HTML rewriter to the theme path.
+    urlMap.set(url, `${jsWpPathPrefix}/${filename}`);
+  }
+
+  // Build the hierarchy now so per-page inline CSS files can be named after
+  // each page's templateSlug — that's the same key the enqueue logic uses
+  // at request time.
+  const pageTitleByPath = new Map(
+    inputs.ingest.pages.map((p) => [p.path, p.title]),
+  );
+  const hierarchy = buildPageHierarchy(inputs.ingest.pages);
+
+  // Per-page inline <style> blocks are written to inline-<slug>.css so each
+  // page only loads its own inline tokens. Deduped against
+  // inputs.assets.inlineStyles by index — identical blocks across pages
+  // emit identical files (different filenames; that's fine).
+  const inlineFilenameByPath = new Map<string, string>();
+  for (const node of hierarchy.nodes) {
+    const path = node.page.path;
+    const indices = inputs.assets.pageInlineStyleIndices.get(path) ?? [];
+    if (indices.length === 0) continue;
+    const inlineCss = indices
+      .map((idx, i) => {
+        const block = inputs.assets.inlineStyles[idx] ?? "";
+        return `/* === inline block ${i + 1} === */\n${block}`;
+      })
       .join("\n\n");
     const rewritten = rewriteCssUrls(inlineCss, inputs.siteUrl, urlMap);
-    await writeFile(join(cssDir, inlineFilename), rewritten);
+    const filename = `inline-${node.templateSlug}.css`;
+    await writeFile(join(cssDir, filename), rewritten);
+    inlineFilenameByPath.set(path, filename);
   }
 
   const cssFilenames: string[] = [];
   for (const r of cssOutcome.results) {
     if (r.status === "ok" && r.filename) cssFilenames.push(r.filename);
   }
-  if (inputs.assets.inlineStyles.length > 0) {
-    cssFilenames.push(inlineFilename);
+  // Per-page inline CSS files are part of the registered stylesheet handle
+  // set so the enqueue logic can reference them.
+  for (const filename of inlineFilenameByPath.values()) {
+    cssFilenames.push(filename);
   }
   const jsFilenames: string[] = [];
   for (const r of jsOutcome.results) {
     if (r.status === "ok" && r.filename) jsFilenames.push(r.filename);
+  }
+
+  // Slug → ordered list of CSS / JS filenames that the original Scorpion
+  // page loaded, in document order. The per-page inline file is enqueued
+  // FIRST so the bundles cascade over it — this matches the original site
+  // where <style> blocks live in <head> and the main bundle is rendered
+  // into <body>, making the bundle authoritative for any selector both
+  // define. Reversing this order causes conflicts because inline blocks
+  // contain selectors like `:root` token overrides that the bundle also
+  // sets; if inline wins, the bundle's component styles fight the
+  // inline-applied tokens.
+  const cssFilenamesByTemplateSlug = new Map<string, string[]>();
+  const jsFilenamesByTemplateSlug = new Map<string, string[]>();
+  for (const node of hierarchy.nodes) {
+    const path = node.page.path;
+
+    const cssForPage: string[] = [];
+    const inlineFile = inlineFilenameByPath.get(path);
+    if (inlineFile) cssForPage.push(inlineFile);
+    const cssUrls = inputs.assets.pageStylesheets.get(path) ?? [];
+    for (const url of cssUrls) {
+      const filename = cssFilenameByUrl.get(url);
+      if (filename) cssForPage.push(filename);
+    }
+    cssFilenamesByTemplateSlug.set(node.templateSlug, cssForPage);
+
+    const jsUrls = inputs.assets.pageScripts.get(path) ?? [];
+    const jsForPage: string[] = [];
+    for (const url of jsUrls) {
+      const filename = jsFilenameByUrl.get(url);
+      if (filename) jsForPage.push(filename);
+    }
+    jsFilenamesByTemplateSlug.set(node.templateSlug, jsForPage);
   }
 
   await writeFile(
@@ -135,15 +220,14 @@ export async function buildWpPackage(
       siteTitle: inputs.siteTitle,
       cssFilenames,
       jsFilenames,
-      inlineStyles: inputs.assets.inlineStyles,
+      perPage: {
+        cssFilenamesByTemplateSlug,
+        jsFilenamesByTemplateSlug,
+      },
     }),
   );
   await writeFile(join(themeDir, "index.php"), buildIndexPhp());
 
-  const pageTitleByPath = new Map(
-    inputs.ingest.pages.map((p) => [p.path, p.title]),
-  );
-  const hierarchy = buildPageHierarchy(inputs.ingest.pages);
   const iconMap = inputs.ingest.iconMap;
   const { templates } = buildPageTemplates(
     inputs.contentZones,

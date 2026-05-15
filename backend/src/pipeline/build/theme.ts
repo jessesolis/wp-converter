@@ -1,10 +1,22 @@
 export const THEME_SLUG = "scorpion-converted";
 
+export interface PerPageAssets {
+  // Template slug (e.g. "home" or "residential-plumbing-services") →
+  // ordered list of CSS / JS filenames the page should load. Filenames
+  // resolve to files in theme/css/ and theme/js/ respectively, plus the
+  // per-page inline CSS filename (also written to theme/css/).
+  cssFilenamesByTemplateSlug: Map<string, string[]>;
+  jsFilenamesByTemplateSlug: Map<string, string[]>;
+}
+
 export interface ThemeInputs {
   siteTitle: string;
+  // Every CSS / JS filename present in theme/css/ and theme/js/. Each
+  // becomes a wp_register_style/script call so the per-page enqueue can
+  // reference it by handle.
   cssFilenames: string[];
   jsFilenames: string[];
-  inlineStyles: string[];
+  perPage: PerPageAssets;
 }
 
 export function buildStyleCss(siteTitle: string): string {
@@ -18,34 +30,139 @@ Version: 1.0
 }
 
 export function buildFunctionsPhp(inputs: ThemeInputs): string {
-  const enqueueStyles = inputs.cssFilenames
-    .map((filename, i) => {
-      const handle = `scorpion-bundle-${i + 1}`;
-      return `    wp_enqueue_style('${handle}', get_stylesheet_directory_uri() . '/css/${escapePhp(filename)}', [], null);`;
+  const cssHandleByFilename = new Map<string, string>();
+  inputs.cssFilenames.forEach((filename, i) => {
+    cssHandleByFilename.set(filename, `scorpion-style-${i + 1}`);
+  });
+  const jsHandleByFilename = new Map<string, string>();
+  inputs.jsFilenames.forEach((filename, i) => {
+    jsHandleByFilename.set(filename, `scorpion-script-${i + 1}`);
+  });
+
+  const registerStyles = inputs.cssFilenames
+    .map((filename) => {
+      const handle = cssHandleByFilename.get(filename)!;
+      return `    wp_register_style('${handle}', get_stylesheet_directory_uri() . '/css/${escapePhp(filename)}', [], null);`;
     })
     .join("\n");
 
-  const enqueueScripts = inputs.jsFilenames
-    .map((filename, i) => {
-      const handle = `scorpion-utils-${i + 1}`;
-      return `    wp_enqueue_script('${handle}', get_stylesheet_directory_uri() . '/js/${escapePhp(filename)}', [], null, true);`;
+  const registerScripts = inputs.jsFilenames
+    .map((filename) => {
+      const handle = jsHandleByFilename.get(filename)!;
+      return `    wp_register_script('${handle}', get_stylesheet_directory_uri() . '/js/${escapePhp(filename)}', [], null, true);`;
     })
     .join("\n");
 
-  // Inline style blocks are emitted as a single concatenated stylesheet
-  // (theme/css/inline-bundle.css) by the build orchestrator before this
-  // function is called, so functions.php only needs to enqueue files.
+  const pageAssetsPhp = buildPageAssetsPhpArray(
+    inputs.perPage,
+    cssHandleByFilename,
+    jsHandleByFilename,
+  );
 
   return `<?php
 /**
  * Scorpion Converted child theme — generated.
- * Stylesheets and scripts are enqueued globally; no conditional logic.
+ *
+ * Stylesheets and scripts are registered globally then enqueued per page,
+ * keyed by the page's template slug. The browser only loads the assets the
+ * original Scorpion page actually used.
  */
-function scorpion_converted_enqueue_assets() {
-${enqueueStyles || "    // (no stylesheets discovered)"}
-${enqueueScripts || "    // (no scripts discovered)"}
+function scorpion_converted_register_assets() {
+${registerStyles || "    // (no stylesheets discovered)"}
+${registerScripts || "    // (no scripts discovered)"}
 }
-add_action('wp_enqueue_scripts', 'scorpion_converted_enqueue_assets');
+add_action('wp_enqueue_scripts', 'scorpion_converted_register_assets', 5);
+
+// Map of template slug → ['css' => [handles], 'js' => [handles]] in the
+// original document load order from each Scorpion page.
+function scorpion_converted_page_assets_map() {
+    return ${pageAssetsPhp};
+}
+
+function scorpion_converted_current_template_slug() {
+    if (!is_page()) {
+        return null;
+    }
+    $tpl = get_page_template_slug();
+    if (!is_string($tpl) || $tpl === '') {
+        return null;
+    }
+    if (preg_match('#templates/page-(.+)\\.php$#', $tpl, $m)) {
+        return $m[1];
+    }
+    return null;
+}
+
+function scorpion_converted_enqueue_page_assets() {
+    $slug = scorpion_converted_current_template_slug();
+    if ($slug === null) {
+        return;
+    }
+    $map = scorpion_converted_page_assets_map();
+    if (!isset($map[$slug])) {
+        return;
+    }
+    $entry = $map[$slug];
+    if (!empty($entry['css'])) {
+        foreach ($entry['css'] as $handle) {
+            wp_enqueue_style($handle);
+        }
+    }
+    if (!empty($entry['js'])) {
+        foreach ($entry['js'] as $handle) {
+            wp_enqueue_script($handle);
+        }
+    }
+}
+add_action('wp_enqueue_scripts', 'scorpion_converted_enqueue_page_assets', 10);
+
+/**
+ * Intercept /common/usc/p/<name>.{js,html,css} requests and serve the
+ * corresponding file out of the theme's js/ dir.
+ *
+ * Scorpion's require2() module loader (inlined into every page's HTML)
+ * builds runtime URLs of the form /common/usc/p/<name>.js from bare
+ * module names like require2('usc/p/scrolling-list'). The literal
+ * /common/usc/p/ prefix is never present in the source HTML or JS — it's
+ * concatenated at runtime — so an HTML / JS source rewrite can't catch
+ * it. A request-time intercept covers every reference form (static,
+ * runtime-constructed, ES module import) transparently.
+ *
+
+ * Apache / Nginx route the URL to WP because the file doesn't exist on
+ * disk; the init hook fires before WP's 404 handler so we can short-
+ * circuit and stream the theme file directly.
+ */
+function scorpion_converted_serve_usc_p_request() {
+    if (!isset($_SERVER['REQUEST_URI'])) {
+        return;
+    }
+    $uri = (string) $_SERVER['REQUEST_URI'];
+    $path = strtok($uri, '?');
+    if (!preg_match('#^/common/usc/p/([a-zA-Z0-9._-]+\\.(js|html|css))$#', $path, $m)) {
+        return;
+    }
+    $name = $m[1];
+    $file = get_stylesheet_directory() . '/js/' . $name;
+    if (!file_exists($file)) {
+        return;
+    }
+    $ext = strtolower($m[2]);
+    if ($ext === 'js') {
+        $mime = 'application/javascript';
+    } elseif ($ext === 'css') {
+        $mime = 'text/css';
+    } elseif ($ext === 'html') {
+        $mime = 'text/html; charset=utf-8';
+    } else {
+        $mime = 'application/octet-stream';
+    }
+    header('Content-Type: ' . $mime);
+    header('Cache-Control: public, max-age=31536000');
+    readfile($file);
+    exit;
+}
+add_action('init', 'scorpion_converted_serve_usc_p_request', 0);
 
 /**
  * [scorpion_zone id="…"] — renders one content zone at its original DOM
@@ -197,6 +314,46 @@ if (have_posts()) {
 }
 get_footer();
 `;
+}
+
+function buildPageAssetsPhpArray(
+  perPage: PerPageAssets,
+  cssHandleByFilename: Map<string, string>,
+  jsHandleByFilename: Map<string, string>,
+): string {
+  const slugs = new Set<string>([
+    ...perPage.cssFilenamesByTemplateSlug.keys(),
+    ...perPage.jsFilenamesByTemplateSlug.keys(),
+  ]);
+  if (slugs.size === 0) {
+    return "array()";
+  }
+
+  const sortedSlugs = [...slugs].sort();
+  const lines: string[] = ["array("];
+  for (const slug of sortedSlugs) {
+    const cssFiles = perPage.cssFilenamesByTemplateSlug.get(slug) ?? [];
+    const jsFiles = perPage.jsFilenamesByTemplateSlug.get(slug) ?? [];
+    const cssHandles = cssFiles
+      .map((f) => cssHandleByFilename.get(f))
+      .filter((h): h is string => !!h);
+    const jsHandles = jsFiles
+      .map((f) => jsHandleByFilename.get(f))
+      .filter((h): h is string => !!h);
+
+    lines.push(`        '${escapePhp(slug)}' => array(`);
+    lines.push(`            'css' => ${phpStringArray(cssHandles)},`);
+    lines.push(`            'js'  => ${phpStringArray(jsHandles)},`);
+    lines.push(`        ),`);
+  }
+  lines.push("    )");
+  return lines.join("\n");
+}
+
+function phpStringArray(values: string[]): string {
+  if (values.length === 0) return "array()";
+  const inner = values.map((v) => `'${escapePhp(v)}'`).join(", ");
+  return `array(${inner})`;
 }
 
 function escapeCssComment(value: string): string {

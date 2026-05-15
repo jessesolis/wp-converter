@@ -11,11 +11,13 @@ export.zip
 ├── theme/
 │   └── scorpion-converted/          ← WordPress child theme
 │       ├── style.css                ← Theme header (required by WP)
-│       ├── functions.php            ← Enqueues all stylesheets and JS
+│       ├── functions.php            ← Registers all assets, enqueues per-page
 │       ├── index.php                ← Minimal fallback template
 │       ├── css/
 │       │   ├── bundle-1.css         ← Extracted Scorpion stylesheets
 │       │   ├── bundle-2.css
+│       │   ├── inline-home.css      ← Per-page inline <style> blocks
+│       │   ├── inline-about.css
 │       │   └── ...
 │       ├── js/
 │       │   ├── utility-1.js         ← Extracted Scorpion JS utilities
@@ -45,24 +47,50 @@ Version: 1.0
 ```
 
 ### functions.php — stylesheet and JS enqueuing
-All stylesheets and JS files are enqueued **globally** — no conditional logic.
+Every CSS/JS file is **registered** globally (`wp_register_style` / `wp_register_script`). Each page then **enqueues only the assets the original Scorpion page actually loaded**, in their original document order, looked up by the page's template slug. Per-page inline `<style>` blocks are written to `inline-<templateSlug>.css` and appended after the page's bundles so they cascade correctly.
 
 ```php
 <?php
-function scorpion_enqueue_assets() {
-    // Stylesheets — all enqueued globally
-    wp_enqueue_style('scorpion-bundle-1', get_stylesheet_directory_uri() . '/css/bundle-1.css');
-    wp_enqueue_style('scorpion-bundle-2', get_stylesheet_directory_uri() . '/css/bundle-2.css');
-    // ... repeat for each extracted stylesheet
+function scorpion_converted_register_assets() {
+    wp_register_style('scorpion-style-1', get_stylesheet_directory_uri() . '/css/bundle-1.css', [], null);
+    wp_register_style('scorpion-style-2', get_stylesheet_directory_uri() . '/css/bundle-2.css', [], null);
+    wp_register_style('scorpion-style-3', get_stylesheet_directory_uri() . '/css/inline-home.css', [], null);
+    // ... one wp_register_* per CSS / JS file shipped in the theme
 
-    // JS utilities
-    wp_enqueue_script('scorpion-utils-1', get_stylesheet_directory_uri() . '/js/utility-1.js', [], null, true);
-    // ... repeat for each extracted JS file
+    wp_register_script('scorpion-script-1', get_stylesheet_directory_uri() . '/js/utility-1.js', [], null, true);
+    // ...
 }
-add_action('wp_enqueue_scripts', 'scorpion_enqueue_assets');
+add_action('wp_enqueue_scripts', 'scorpion_converted_register_assets', 5);
+
+// Template slug → asset handles the original Scorpion page loaded, in order.
+function scorpion_converted_page_assets_map() {
+    return array(
+        'home' => array(
+            'css' => array('scorpion-style-1', 'scorpion-style-2', 'scorpion-style-3'),
+            'js'  => array('scorpion-script-1'),
+        ),
+        'about' => array(
+            'css' => array('scorpion-style-1', 'scorpion-style-4'),
+            'js'  => array('scorpion-script-1'),
+        ),
+        // ...
+    );
+}
+
+function scorpion_converted_enqueue_page_assets() {
+    if (!is_page()) return;
+    $tpl = get_page_template_slug();
+    if (!preg_match('#templates/page-(.+)\.php$#', $tpl, $m)) return;
+    $slug = $m[1];
+    $map = scorpion_converted_page_assets_map();
+    if (!isset($map[$slug])) return;
+    foreach ($map[$slug]['css'] as $handle) wp_enqueue_style($handle);
+    foreach ($map[$slug]['js']  as $handle) wp_enqueue_script($handle);
+}
+add_action('wp_enqueue_scripts', 'scorpion_converted_enqueue_page_assets', 10);
 ```
 
-> **Important:** JS files are enqueued with `$in_footer = true` (last argument). This mirrors how Scorpion loads its utilities and prevents render-blocking.
+> **Important:** JS files are registered with `$in_footer = true` (last argument). This mirrors how Scorpion loads its utilities and prevents render-blocking. Pages that aren't WordPress pages (404, archive, etc.) skip the enqueue and render with no Scorpion assets — that's intentional, those routes aren't part of the original Scorpion site.
 
 ### Page templates
 Each converted page gets its own PHP template file. The static HTML from Scorpion is used as the template body, with `.cnt-stl` regions replaced by Classic block output.

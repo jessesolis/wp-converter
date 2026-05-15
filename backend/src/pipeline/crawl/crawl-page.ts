@@ -1,5 +1,5 @@
 /// <reference lib="dom" />
-import { TimeoutError, type Browser } from "puppeteer";
+import { TimeoutError, type BrowserContext } from "puppeteer";
 import type { CrawledPage } from "./types";
 
 export const DEFAULT_PAGE_TIMEOUT_MS = 30_000;
@@ -13,13 +13,47 @@ interface InPageExtraction {
 }
 
 export async function crawlPage(
-  browser: Browser,
+  context: BrowserContext,
   pageUrl: string,
   path: string,
   timeoutMs: number = DEFAULT_PAGE_TIMEOUT_MS,
 ): Promise<CrawledPage> {
   const start = Date.now();
-  const page = await browser.newPage();
+  const page = await context.newPage();
+
+  // Capture stylesheet / script URLs from network responses *as they happen*,
+  // not from the post-load DOM. Scorpion's USC framework inlines bundle CSS
+  // into <style> blocks at runtime and then removes the original
+  // <link rel="stylesheet"> element. Under concurrent crawl pressure the
+  // element is often gone by the time we'd query the DOM, so DOM-only
+  // extraction returns nothing. Response events fire when the browser
+  // requests the resource — they survive any later DOM mutation.
+  const networkStylesheetUrls: string[] = [];
+  const networkScriptUrls: string[] = [];
+  const seenStylesheets = new Set<string>();
+  const seenScripts = new Set<string>();
+  page.on("response", (response) => {
+    const status = response.status();
+    if (status < 200 || status >= 400) return;
+    const url = response.url();
+    const ct = (response.headers()["content-type"] ?? "").toLowerCase();
+    if (ct.includes("text/css")) {
+      if (!seenStylesheets.has(url)) {
+        seenStylesheets.add(url);
+        networkStylesheetUrls.push(url);
+      }
+    } else if (
+      ct.includes("javascript") ||
+      ct.includes("ecmascript") ||
+      ct.includes("application/x-javascript")
+    ) {
+      if (!seenScripts.has(url)) {
+        seenScripts.add(url);
+        networkScriptUrls.push(url);
+      }
+    }
+  });
+
   try {
     const response = await page.goto(pageUrl, {
       waitUntil: "networkidle2",
@@ -50,6 +84,16 @@ export async function crawlPage(
     const fullHtml = await page.content();
     const extracted = await page.evaluate(extractInPage);
 
+    // Prefer the DOM-extracted order (authored cascade order) but fall back
+    // to network-captured URLs so we don't miss bundles whose <link> was
+    // removed before extraction. Items found only in the network log are
+    // appended at the end in request order.
+    const stylesheetUrls = mergeOrdered(
+      extracted.stylesheetUrls,
+      networkStylesheetUrls,
+    );
+    const scriptUrls = mergeOrdered(extracted.scriptUrls, networkScriptUrls);
+
     return {
       pageUrl,
       path,
@@ -57,8 +101,8 @@ export async function crawlPage(
       httpStatus,
       durationMs: Date.now() - start,
       fullHtml,
-      stylesheetUrls: extracted.stylesheetUrls,
-      scriptUrls: extracted.scriptUrls,
+      stylesheetUrls,
+      scriptUrls,
       imageUrls: extracted.imageUrls,
       inlineStyles: extracted.inlineStyles,
       navHtml: extracted.navHtml,
@@ -75,6 +119,22 @@ export async function crawlPage(
   } finally {
     await page.close().catch(() => {});
   }
+}
+
+function mergeOrdered(primary: string[], fallback: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const url of primary) {
+    if (seen.has(url)) continue;
+    seen.add(url);
+    out.push(url);
+  }
+  for (const url of fallback) {
+    if (seen.has(url)) continue;
+    seen.add(url);
+    out.push(url);
+  }
+  return out;
 }
 
 // Runs inside the browser page context — must be self-contained.

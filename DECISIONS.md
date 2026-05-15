@@ -64,15 +64,32 @@ This supersedes the prior stance that "USC version is informational only" — it
 
 ## Stylesheet enqueuing: Global vs. conditional per page type
 
-**Decision:** All discovered stylesheets are enqueued globally in WordPress — every stylesheet loads on every page.
+**Status:** Superseded — see "Per-page asset enqueuing" below.
 
-**Rejected:** Conditional enqueuing based on which page types discovered each stylesheet.
+**Original decision:** All discovered stylesheets are enqueued globally in WordPress — every stylesheet loads on every page.
 
-**Why:**
+**Original reasoning:**
 - Visual accuracy and ease of implementation are the top priorities
 - Conditional enqueuing requires reliable page type detection and per-type stylesheet mapping — significant added complexity
 - The performance cost of globally loading all stylesheets is an acceptable tradeoff for a migration tool
 - Can be optimised as a future enhancement
+
+**Why this changed:** The crawler already captures each page's stylesheet/script URLs in document order, so the per-page mapping is free — no detection heuristic needed. Once the converted sites started shipping with the full bundle on every page, the performance hit (every page paying for every other page's CSS/JS) outweighed the implementation savings.
+
+---
+
+## Per-page asset enqueuing
+
+**Decision:** Every CSS/JS file is registered globally via `wp_register_*`; each page enqueues only the assets the original Scorpion page actually loaded, in original document order, keyed by the page's template slug. Per-page inline `<style>` blocks are written to `inline-<templateSlug>.css` and appended after the page's bundles.
+
+**Rejected:** Continuing to enqueue every asset on every page (the original decision above).
+
+**Why:**
+- The crawler records per-page `stylesheetUrls` / `scriptUrls` / `inlineStyles` — the data was already there, just being collapsed during aggregation. No DOM heuristics or page-type detection required.
+- Loading only what each page used materially reduces request count and bytes-on-wire per pageview, fixing observable performance on converted sites.
+- Template slug is a stable, post-import-survivable lookup key (it's encoded in `_wp_page_template` and read via `get_page_template_slug()`), so the map survives re-imports and content edits.
+- Original document load order is preserved per page, so cascade-sensitive bundles still resolve correctly.
+- Visual accuracy is unaffected — each page loads exactly the assets the original Scorpion page loaded, no more, no less.
 
 ---
 
