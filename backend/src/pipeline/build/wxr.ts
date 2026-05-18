@@ -1,4 +1,5 @@
 import type { NavAnalysis, NavVariant, PageContentZones } from "../parse";
+import type { Cf7Form } from "./cf7-forms";
 import type { PageHierarchy, PageNode } from "./hierarchy";
 import { stripBlockedDomainContent } from "./strip-blocked-domains";
 import { substituteSvgIcons } from "./svg-icons";
@@ -13,6 +14,7 @@ export interface WxrInputs {
   urlMap: Map<string, string>;
   iconMap: Map<string, string>;
   navAnalysis?: NavAnalysis;
+  cf7Forms?: Cf7Form[];
 }
 
 const PRIMARY_MENU_TERM_ID = 1;
@@ -35,7 +37,9 @@ export function buildWxrXml(inputs: WxrInputs): string {
     ? buildNavMenuItems(dominantNav, inputs.hierarchy.maxPostId)
     : [];
 
-  const itemsBlock = [...pageItems, ...navItems].join("\n");
+  const cf7Items = (inputs.cf7Forms ?? []).map(buildCf7Item);
+
+  const itemsBlock = [...pageItems, ...navItems, ...cf7Items].join("\n");
   const termBlock = navTerm ? `${navTerm}\n` : "";
 
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -263,6 +267,42 @@ function buildNavMenuItem(args: {
       <wp:post_password><![CDATA[]]></wp:post_password>
       <wp:is_sticky>0</wp:is_sticky>
       <category domain="nav_menu" nicename="${PRIMARY_MENU_SLUG}"><![CDATA[${PRIMARY_MENU_NAME}]]></category>
+${meta}
+    </item>`;
+}
+
+function buildCf7Item(form: Cf7Form): string {
+  const itemDate = new Date(Date.now() - form.postId * 1000);
+  const sqlDate = formatMysqlDate(itemDate);
+  const pubDate = itemDate.toUTCString();
+
+  const meta = [
+    postmetaRaw("_form", form.formTagMarkup),
+    postmetaRaw("_mail", form.mailSerialized),
+    postmetaRaw("_locale", "en_US"),
+  ].join("\n");
+
+  return `    <item>
+      <title>${xmlText(form.title)}</title>
+      <link></link>
+      <pubDate>${pubDate}</pubDate>
+      <dc:creator><![CDATA[admin]]></dc:creator>
+      <guid isPermaLink="false">wpcf7-${form.postId}</guid>
+      <description></description>
+      <content:encoded><![CDATA[]]></content:encoded>
+      <excerpt:encoded><![CDATA[]]></excerpt:encoded>
+      <wp:post_id>${form.postId}</wp:post_id>
+      <wp:post_date><![CDATA[${sqlDate}]]></wp:post_date>
+      <wp:post_date_gmt><![CDATA[${sqlDate}]]></wp:post_date_gmt>
+      <wp:comment_status><![CDATA[closed]]></wp:comment_status>
+      <wp:ping_status><![CDATA[closed]]></wp:ping_status>
+      <wp:post_name><![CDATA[${form.slug}]]></wp:post_name>
+      <wp:status><![CDATA[publish]]></wp:status>
+      <wp:post_parent>0</wp:post_parent>
+      <wp:menu_order>0</wp:menu_order>
+      <wp:post_type><![CDATA[wpcf7_contact_form]]></wp:post_type>
+      <wp:post_password><![CDATA[]]></wp:post_password>
+      <wp:is_sticky>0</wp:is_sticky>
 ${meta}
     </item>`;
 }

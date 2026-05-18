@@ -218,6 +218,14 @@ async function main() {
   wpCli(["plugin", "install", "wordpress-importer", "--force"]);
   wpCli(["plugin", "activate", "wordpress-importer"]);
 
+  // ---- 6b. Install + activate Contact Form 7 ----
+  // Generated wpcf7_contact_form posts in the WXR are no-ops without
+  // the CF7 plugin loaded — it owns the [contact-form-7] shortcode + the
+  // post type.
+  console.log("\nInstalling contact-form-7 plugin…");
+  wpCli(["plugin", "install", "contact-form-7", "--force"]);
+  wpCli(["plugin", "activate", "contact-form-7"]);
+
   // ---- 7. Copy WXR into the container and import ----
   console.log("\nCopying WXR into container…");
   docker([
