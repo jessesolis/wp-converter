@@ -14,6 +14,7 @@ import type {
   NavAnalysis,
   PageContentZones,
 } from "../parse";
+import { buildCf7Forms, type Cf7Form } from "./cf7-forms";
 import { buildMigrationChecklist } from "./checklist";
 import { buildPageHierarchy } from "./hierarchy";
 import { stripBlockedDomainsFromJs } from "./strip-blocked-domains";
@@ -173,6 +174,15 @@ export async function buildWpPackage(
     inlineFilenameByPath.set(path, filename);
   }
 
+  // CF7 layout + label/sizing overrides for the .ui-contact-form panel.
+  // Written once per build, enqueued on every page below so it always wins
+  // over the bundled Scorpion CSS.
+  const cf7OverridesFilename = "cf7-overrides.css";
+  await writeFile(
+    join(cssDir, cf7OverridesFilename),
+    buildCf7OverridesCss(),
+  );
+
   const cssFilenames: string[] = [];
   for (const r of cssOutcome.results) {
     if (r.status === "ok" && r.filename) cssFilenames.push(r.filename);
@@ -182,6 +192,7 @@ export async function buildWpPackage(
   for (const filename of inlineFilenameByPath.values()) {
     cssFilenames.push(filename);
   }
+  cssFilenames.push(cf7OverridesFilename);
   const jsFilenames: string[] = [];
   for (const r of jsOutcome.results) {
     if (r.status === "ok" && r.filename) jsFilenames.push(r.filename);
@@ -209,6 +220,8 @@ export async function buildWpPackage(
       const filename = cssFilenameByUrl.get(url);
       if (filename) cssForPage.push(filename);
     }
+    // CF7 overrides go last so they win on equal-specificity selectors.
+    cssForPage.push(cf7OverridesFilename);
     cssFilenamesByTemplateSlug.set(node.templateSlug, cssForPage);
 
     const jsUrls = inputs.assets.pageScripts.get(path) ?? [];
@@ -239,12 +252,36 @@ export async function buildWpPackage(
   await writeFile(join(themeDir, "index.php"), buildIndexPhp());
 
   const iconMap = inputs.ingest.iconMap;
+
+  // CF7 forms: allocate post_ids after pages + nav menu items so they
+  // don't collide. The dominant nav variant claims hierarchy.maxPostId + 1
+  // .. + items.length inside wxr.ts; CF7 posts start after that.
+  const dominantNav = inputs.navAnalysis?.variants[0];
+  const navItemCount = dominantNav?.items.length ?? 0;
+  const cf7BasePostId = hierarchy.maxPostId + navItemCount + 1;
+  const cf7Forms: Cf7Form[] = buildCf7Forms({
+    variants: inputs.formAnalysis.variants,
+    basePostId: cf7BasePostId,
+    siteTitle: inputs.siteTitle,
+  });
+  const formIdToCf7Lookup = new Map<string, { postId: number; title: string }>();
+  for (const cf7 of cf7Forms) {
+    const variant = inputs.formAnalysis.variants.find(
+      (v) => v.fingerprint === cf7.fingerprint,
+    );
+    if (!variant) continue;
+    for (const fid of variant.formIds) {
+      formIdToCf7Lookup.set(fid, { postId: cf7.postId, title: cf7.title });
+    }
+  }
+
   const { templates } = buildPageTemplates(
     inputs.contentZones,
     hierarchy,
     pageTitleByPath,
     urlMap,
     iconMap,
+    formIdToCf7Lookup,
   );
   for (const t of templates) {
     await writeFile(join(templatesDir, t.filename), t.content);
@@ -258,6 +295,7 @@ export async function buildWpPackage(
     urlMap,
     iconMap,
     navAnalysis: inputs.navAnalysis,
+    cf7Forms,
   });
   await writeFile(join(outputDir, "import.xml"), wxr);
 
@@ -300,6 +338,87 @@ function outcomeStats(o: {
   totalBytes: number;
 }): BuildStats {
   return { ok: o.okCount, failed: o.failedCount, totalBytes: o.totalBytes };
+}
+
+// Layout + sizing + label-colour rules for the CF7 form that replaces the
+// Scorpion contact panel. Targets `.ui-contact-form` (we pass that class
+// via the [contact-form-7] shortcode's html_class attribute) so the rules
+// don't leak to other forms on the site. Uses `:has()` — supported in all
+// current Chrome / Edge / Safari / Firefox (Firefox stable late 2023).
+function buildCf7OverridesCss(): string {
+  return [
+    "/* CF7 layout overrides for the .ui-contact-form panel. */",
+    "",
+    ".ui-contact-form {",
+    "  display: flex;",
+    "  flex-wrap: wrap;",
+    "  gap: 0.5rem;",
+    "  padding: 0;",
+    "}",
+    "",
+    "/* CF7 wraps every tag in a <p> with default agent margins — kill them",
+    " * so flex layout owns the spacing. Default each row to full width;",
+    " * narrower fields opt in via the :has() rules below. */",
+    ".ui-contact-form > p {",
+    "  flex: 0 1 100%;",
+    "  margin: 0;",
+    "  box-sizing: border-box;",
+    "}",
+    "",
+    "/* Single-line inputs + selects — match the original panel proportions. */",
+    ".ui-contact-form input.wpcf7-form-control:not([type=\"checkbox\"]):not([type=\"radio\"]):not([type=\"submit\"]),",
+    ".ui-contact-form select.wpcf7-form-control {",
+    "  height: 2.5rem;",
+    "  padding: 0 0.75rem;",
+    "  box-sizing: border-box;",
+    "  width: 100%;",
+    "  background-color: #fff;",
+    "}",
+    "",
+    "/* Textareas — same look, height 80% of containing box. */",
+    ".ui-contact-form textarea.wpcf7-form-control {",
+    "  padding: 0.5rem 0.75rem;",
+    "  box-sizing: border-box;",
+    "  width: 100%;",
+    "  height: 80%;",
+    "  background-color: #fff;",
+    "}",
+    "",
+    "/* ≥ 700px: text-like single-line fields go half width so two share a row. */",
+    "@media (min-width: 700px) {",
+    "  .ui-contact-form > p:has(input.wpcf7-text),",
+    "  .ui-contact-form > p:has(input.wpcf7-tel),",
+    "  .ui-contact-form > p:has(input.wpcf7-email),",
+    "  .ui-contact-form > p:has(input.wpcf7-number),",
+    "  .ui-contact-form > p:has(input.wpcf7-url),",
+    "  .ui-contact-form > p:has(input.wpcf7-password) {",
+    "    flex: 0 1 calc(50% - 0.25rem);",
+    "  }",
+    "",
+    "  /* Address stays full-width even though it's typically a text input. */",
+    "  .ui-contact-form > p:has(.wpcf7-form-control-wrap[data-name*=\"address\"]) {",
+    "    flex: 0 1 100%;",
+    "  }",
+    "}",
+    "",
+    "/* Submit button — match the site's primary button colour, size to its label. */",
+    ".ui-contact-form input.wpcf7-submit {",
+    "  background: var(--buttons);",
+    "  width: fit-content;",
+    "  padding: 1rem;",
+    "}",
+    "",
+    "/* Label colour follows the section background contract:",
+    " *   .lt-bg panel  → black labels by default, white when nested in .ulk-bg",
+    " *   .dk-bg panel  → white labels by default, black when nested in .ulk-bg",
+    " * The 3-class rule (.ulk-bg in between) is more specific and overrides",
+    " * the 2-class default when present. */",
+    ".lt-bg .ui-contact-form label { color: #000; }",
+    ".dk-bg .ui-contact-form label { color: #fff; }",
+    ".lt-bg .ulk-bg .ui-contact-form label { color: #fff; }",
+    ".dk-bg .ulk-bg .ui-contact-form label { color: #000; }",
+    "",
+  ].join("\n");
 }
 
 function collectLimitations(
