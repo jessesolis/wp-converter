@@ -18,7 +18,7 @@ import { buildCf7Forms, type Cf7Form } from "./cf7-forms";
 import { buildMigrationChecklist } from "./checklist";
 import { buildPageHierarchy } from "./hierarchy";
 import { stripBlockedDomainsFromJs } from "./strip-blocked-domains";
-import { buildPageTemplates } from "./templates";
+import { buildPageTemplates, buildSinglePostTemplate } from "./templates";
 import {
   buildFunctionsPhp,
   buildIndexPhp,
@@ -153,12 +153,24 @@ export async function buildWpPackage(
   );
   const hierarchy = buildPageHierarchy(inputs.ingest.pages);
 
-  // Per-page inline <style> blocks are written to inline-<slug>.css so each
-  // page only loads its own inline tokens. Deduped against
-  // inputs.assets.inlineStyles by index — identical blocks across pages
-  // emit identical files (different filenames; that's fine).
-  const inlineFilenameByPath = new Map<string, string>();
+  // Many pages share a templateSlug now (one per unique Scorpion Template
+  // value). Pick the lowest-postId non-blog page in each group as the
+  // exemplar — its inline styles and asset deps become the template's.
+  const exemplarByTemplateSlug = new Map<string, typeof hierarchy.nodes[0]>();
   for (const node of hierarchy.nodes) {
+    if (node.isBlogPost) continue;
+    const existing = exemplarByTemplateSlug.get(node.templateSlug);
+    if (!existing || node.postId < existing.postId) {
+      exemplarByTemplateSlug.set(node.templateSlug, node);
+    }
+  }
+
+  // Per-template inline <style> blocks are written to inline-<slug>.css
+  // so each template only loads its exemplar's tokens. Pages in the same
+  // group inherit those (the alternative — generate per-page inline CSS —
+  // would defeat the consolidation goal).
+  const inlineFilenameBySlug = new Map<string, string>();
+  for (const [slug, node] of exemplarByTemplateSlug) {
     const path = node.page.path;
     const indices = inputs.assets.pageInlineStyleIndices.get(path) ?? [];
     if (indices.length === 0) continue;
@@ -169,9 +181,9 @@ export async function buildWpPackage(
       })
       .join("\n\n");
     const rewritten = rewriteCssUrls(inlineCss, inputs.siteUrl, urlMap);
-    const filename = `inline-${node.templateSlug}.css`;
+    const filename = `inline-${slug}.css`;
     await writeFile(join(cssDir, filename), rewritten);
-    inlineFilenameByPath.set(path, filename);
+    inlineFilenameBySlug.set(slug, filename);
   }
 
   // CF7 layout + label/sizing overrides for the .ui-contact-form panel.
@@ -187,9 +199,9 @@ export async function buildWpPackage(
   for (const r of cssOutcome.results) {
     if (r.status === "ok" && r.filename) cssFilenames.push(r.filename);
   }
-  // Per-page inline CSS files are part of the registered stylesheet handle
-  // set so the enqueue logic can reference them.
-  for (const filename of inlineFilenameByPath.values()) {
+  // Per-template inline CSS files are part of the registered stylesheet
+  // handle set so the enqueue logic can reference them.
+  for (const filename of inlineFilenameBySlug.values()) {
     cssFilenames.push(filename);
   }
   cssFilenames.push(cf7OverridesFilename);
@@ -198,22 +210,19 @@ export async function buildWpPackage(
     if (r.status === "ok" && r.filename) jsFilenames.push(r.filename);
   }
 
-  // Slug → ordered list of CSS / JS filenames that the original Scorpion
-  // page loaded, in document order. The per-page inline file is enqueued
-  // FIRST so the bundles cascade over it — this matches the original site
-  // where <style> blocks live in <head> and the main bundle is rendered
-  // into <body>, making the bundle authoritative for any selector both
-  // define. Reversing this order causes conflicts because inline blocks
-  // contain selectors like `:root` token overrides that the bundle also
-  // sets; if inline wins, the bundle's component styles fight the
-  // inline-applied tokens.
+  // Slug → ordered list of CSS / JS filenames the exemplar's Scorpion
+  // page loaded, in document order. Per-template inline file goes FIRST so
+  // the downloaded bundles cascade over it (matches the original site
+  // where <style> blocks live in <head> and the main bundle renders into
+  // <body>, making the bundle authoritative on any selector they both
+  // touch — reversing causes :root token fights).
   const cssFilenamesByTemplateSlug = new Map<string, string[]>();
   const jsFilenamesByTemplateSlug = new Map<string, string[]>();
-  for (const node of hierarchy.nodes) {
+  for (const [slug, node] of exemplarByTemplateSlug) {
     const path = node.page.path;
 
     const cssForPage: string[] = [];
-    const inlineFile = inlineFilenameByPath.get(path);
+    const inlineFile = inlineFilenameBySlug.get(slug);
     if (inlineFile) cssForPage.push(inlineFile);
     const cssUrls = inputs.assets.pageStylesheets.get(path) ?? [];
     for (const url of cssUrls) {
@@ -222,7 +231,7 @@ export async function buildWpPackage(
     }
     // CF7 overrides go last so they win on equal-specificity selectors.
     cssForPage.push(cf7OverridesFilename);
-    cssFilenamesByTemplateSlug.set(node.templateSlug, cssForPage);
+    cssFilenamesByTemplateSlug.set(slug, cssForPage);
 
     const jsUrls = inputs.assets.pageScripts.get(path) ?? [];
     const jsForPage: string[] = [];
@@ -230,13 +239,33 @@ export async function buildWpPackage(
       const filename = jsFilenameByUrl.get(url);
       if (filename) jsForPage.push(filename);
     }
-    jsFilenamesByTemplateSlug.set(node.templateSlug, jsForPage);
+    jsFilenamesByTemplateSlug.set(slug, jsForPage);
   }
 
   await writeFile(
     join(themeDir, "style.css"),
     buildStyleCss(inputs.siteTitle),
   );
+  // Pick the dominant Scorpion template among blog posts — single.php
+  // uses that template's chrome + asset bundle. Falls back to null when
+  // the site has no blog posts.
+  const blogTemplateCounts = new Map<string, number>();
+  for (const node of hierarchy.nodes) {
+    if (!node.isBlogPost) continue;
+    blogTemplateCounts.set(
+      node.templateSlug,
+      (blogTemplateCounts.get(node.templateSlug) ?? 0) + 1,
+    );
+  }
+  let postTemplateSlug: string | null = null;
+  let bestCount = 0;
+  for (const [slug, count] of blogTemplateCounts) {
+    if (count > bestCount) {
+      bestCount = count;
+      postTemplateSlug = slug;
+    }
+  }
+
   await writeFile(
     join(themeDir, "functions.php"),
     buildFunctionsPhp({
@@ -247,6 +276,7 @@ export async function buildWpPackage(
         cssFilenamesByTemplateSlug,
         jsFilenamesByTemplateSlug,
       },
+      postTemplateSlug,
     }),
   );
   await writeFile(join(themeDir, "index.php"), buildIndexPhp());
@@ -285,6 +315,19 @@ export async function buildWpPackage(
   );
   for (const t of templates) {
     await writeFile(join(templatesDir, t.filename), t.content);
+  }
+
+  // single.php for post_type=post views. WP picks it up automatically by
+  // filename — uses the first blog post's HTML as the chrome exemplar.
+  const singleTemplate = buildSinglePostTemplate(
+    inputs.contentZones,
+    hierarchy,
+    urlMap,
+    iconMap,
+    formIdToCf7Lookup,
+  );
+  if (singleTemplate) {
+    await writeFile(join(themeDir, "single.php"), singleTemplate.content);
   }
 
   const wxr = buildWxrXml({

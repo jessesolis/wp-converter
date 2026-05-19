@@ -25,11 +25,20 @@ export function extractContentZones(
     index++;
   });
 
+  // Scorpion's blog post body lives in `<article class="cnt-stl">` —
+  // not listed in SiteContentIdsTable so the zone walk above doesn't
+  // touch it. Capture the first one's inner HTML separately so the WXR
+  // builder can emit it as post_content for blog posts (and so single.php
+  // can render the_content() in place of the article).
+  const $body = $("article.cnt-stl").first();
+  const bodyHtml = $body.length > 0 ? ($body.html() ?? "") : "";
+
   return {
     pageUrl,
     path,
     zones,
     template: $.html(),
+    bodyHtml,
   };
 }
 

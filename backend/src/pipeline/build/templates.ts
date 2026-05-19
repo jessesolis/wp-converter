@@ -1,6 +1,10 @@
 import * as cheerio from "cheerio";
 import type { PageContentZones } from "../parse";
-import { normalizePath, type PageHierarchy } from "./hierarchy";
+import {
+  normalizePath,
+  templateValueToDisplayName,
+  type PageHierarchy,
+} from "./hierarchy";
 import { stripBlockedDomainContent } from "./strip-blocked-domains";
 import { substituteSvgIcons } from "./svg-icons";
 import { rewriteHtmlUrls } from "./url-rewriter";
@@ -24,9 +28,13 @@ export interface Cf7Lookup {
   title: string;
 }
 
-// One PHP template per real page. Filename uses the flat templateSlug from
-// the hierarchy (e.g. `templates/page-residential-plumbing-services-drain-lines.php`)
-// to avoid filesystem collisions on deep nested URLs.
+// One PHP template per unique Scorpion Template value, NOT per page. Many
+// pages share a template (e.g. 22 "System" pages → one page-system.php).
+// We pick the exemplar (lowest-postId page in the group) as the source for
+// the template HTML; sister pages assigned to it inherit its chrome.
+// Blog posts are excluded — they're routed through single.php instead.
+// The PHP files include a `Template Name:` header so each shows up as an
+// option in the WP admin Page → Template dropdown.
 export function buildPageTemplates(
   zones: PageContentZones[],
   hierarchy: PageHierarchy,
@@ -36,16 +44,35 @@ export function buildPageTemplates(
   formIdToCf7Lookup: Map<string, Cf7Lookup> = new Map(),
 ): BuiltTemplates {
   const templates: PageTemplateOutput[] = [];
-
+  const zonesByPath = new Map<string, PageContentZones>();
   for (const z of zones) {
-    const node = hierarchy.byPath.get(normalizePath(z.path));
-    if (!node) continue;
-    const templateName =
-      pageTitleByPath.get(z.path) || z.path || node.templateSlug;
+    zonesByPath.set(normalizePath(z.path), z);
+  }
+
+  const groupBySlug = new Map<string, typeof hierarchy.nodes>();
+  for (const node of hierarchy.nodes) {
+    if (node.isBlogPost) continue;
+    const list = groupBySlug.get(node.templateSlug) ?? [];
+    list.push(node);
+    groupBySlug.set(node.templateSlug, list);
+  }
+
+  for (const [slug, group] of groupBySlug) {
+    group.sort((a, b) => a.postId - b.postId);
+    const exemplar = group[0];
+    const exemplarZones = zonesByPath.get(normalizePath(exemplar.path));
+    if (!exemplarZones) continue;
+    // The template Name shown in the admin dropdown. When the column
+    // carries a readable name ("System - No Banner") we use it directly;
+    // when Scorpion ships a numeric template ID we surface
+    // "Template <id>" via templateValueToDisplayName.
+    const templateName = exemplar.page.template
+      ? templateValueToDisplayName(exemplar.page.template)
+      : pageTitleByPath.get(exemplar.path) || exemplar.path || slug;
     templates.push(
       buildPageTemplate(
-        z,
-        node.templateSlug,
+        exemplarZones,
+        slug,
         templateName,
         urlMap,
         iconMap,
@@ -57,6 +84,42 @@ export function buildPageTemplates(
   return { templates };
 }
 
+// Build a single.php for post_type=post views. Uses the first blog-post
+// node's HTML as the exemplar; sister posts inherit its chrome. Returns
+// null when no blog posts exist on the site. Output omits the
+// `Template Name:` header — WP picks single.php automatically based on
+// the file name; it's not a user-selectable Page Template.
+export function buildSinglePostTemplate(
+  zones: PageContentZones[],
+  hierarchy: PageHierarchy,
+  urlMap: Map<string, string>,
+  iconMap: Map<string, string>,
+  formIdToCf7Lookup: Map<string, Cf7Lookup> = new Map(),
+): { content: string } | null {
+  const blogNodes = hierarchy.nodes
+    .filter((n) => n.isBlogPost)
+    .sort((a, b) => a.postId - b.postId);
+  if (blogNodes.length === 0) return null;
+
+  const zonesByPath = new Map<string, PageContentZones>();
+  for (const z of zones) zonesByPath.set(normalizePath(z.path), z);
+
+  const exemplar = blogNodes[0];
+  const exemplarZones = zonesByPath.get(normalizePath(exemplar.path));
+  if (!exemplarZones) return null;
+
+  const built = buildPageTemplate(
+    exemplarZones,
+    "single",
+    "Single Post",
+    urlMap,
+    iconMap,
+    formIdToCf7Lookup,
+    { omitHeader: true, replaceArticleWithTheContent: true },
+  );
+  return { content: built.content };
+}
+
 function buildPageTemplate(
   page: PageContentZones,
   slug: string,
@@ -64,6 +127,16 @@ function buildPageTemplate(
   urlMap: Map<string, string>,
   iconMap: Map<string, string>,
   formIdToCf7Lookup: Map<string, Cf7Lookup>,
+  options: {
+    omitHeader?: boolean;
+    /**
+     * When true, replace the inner HTML of the first
+     * `<article class="cnt-stl">` element with a `<?php the_content(); ?>`
+     * call. Used by single.php so each blog post renders its own captured
+     * body (stored in post_content) instead of the exemplar's body.
+     */
+    replaceArticleWithTheContent?: boolean;
+  } = {},
 ): PageTemplateOutput {
   let html = rewriteHtmlUrls(page.template, page.pageUrl, urlMap);
   html = substituteSvgIcons(html, iconMap);
@@ -76,6 +149,19 @@ function buildPageTemplate(
   $('link[rel="stylesheet"]').remove();
   $("script[src]").remove();
   $("style").remove();
+
+  // single.php (the post template): swap the exemplar's blog body for a
+  // placeholder that becomes `<?php the_content(); ?>` so each post
+  // renders its own captured `<article class="cnt-stl">` content (stored
+  // on the post's content:encoded → post_content).
+  const articleContentToken = "WP_THE_CONTENT_MARKER";
+  if (options.replaceArticleWithTheContent) {
+    const $article = $("article.cnt-stl").first();
+    if ($article.length > 0) {
+      $article.empty();
+      $article.append(`<!-- ${articleContentToken} -->`);
+    }
+  }
 
   // Swap Scorpion's contact form for the matching CF7 shortcode. Scorpion
   // wraps each contact panel in a <form> shell (ASP.NET WebForms) with the
@@ -144,6 +230,12 @@ function buildPageTemplate(
   }
 
   html = $.html();
+  if (options.replaceArticleWithTheContent) {
+    html = html.replace(
+      `<!-- ${articleContentToken} -->`,
+      "<?php the_content(); ?>",
+    );
+  }
   for (const [token, shortcode] of cf7Replacements) {
     html = html.replace(`<!-- ${token} -->`, shortcode);
   }
@@ -164,7 +256,9 @@ function buildPageTemplate(
     return `<?php echo do_shortcode('[scorpion_zone id="${safeId}"]'); ?>`;
   });
 
-  const header = `<?php
+  const header = options.omitHeader
+    ? ""
+    : `<?php
 /* Template Name: ${escapePhpComment(templateName)} */
 ?>
 `;
