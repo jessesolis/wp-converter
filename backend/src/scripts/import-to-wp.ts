@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { desc, eq, isNotNull } from "drizzle-orm";
 import { closeDb, db } from "../db/client";
 import { jobs } from "../db/schema";
@@ -11,6 +11,20 @@ const ADMIN_USER = "admin";
 const ADMIN_PASS = "admin";
 const ADMIN_EMAIL = "admin@example.test";
 const THEME_SLUG = "scorpion-converted";
+
+// When the backend runs in a container, output paths in the DB use the
+// container's TEMP_DIR (/tmp/scorpion-conversions). On the host those
+// files live under <repo-root>/.conversions/ via the compose bind mount.
+// Translate so this script (which runs on the host) can still find them.
+const CONTAINER_TEMP_PREFIX = "/tmp/scorpion-conversions/";
+const HOST_CONVERSIONS_DIR =
+  process.env.HOST_CONVERSIONS_DIR ??
+  resolve(process.cwd(), "..", ".conversions");
+
+function toHostPath(p: string): string {
+  if (!p.startsWith(CONTAINER_TEMP_PREFIX)) return p;
+  return join(HOST_CONVERSIONS_DIR, p.slice(CONTAINER_TEMP_PREFIX.length));
+}
 
 // Latest stable WordPress importer plugin version. The wp-cli installer is
 // fussy about activating a freshly-downloaded plugin within the same call, so
@@ -96,7 +110,7 @@ async function main() {
     process.exit(1);
   }
 
-  const outputDir = join(dirname(job.outputPath), "output");
+  const outputDir = join(dirname(toHostPath(job.outputPath)), "output");
   const themeSrc = join(outputDir, "theme", THEME_SLUG);
   const mediaSrc = join(outputDir, "media");
   const wxrSrc = join(outputDir, "import.xml");
