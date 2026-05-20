@@ -62,13 +62,20 @@ export function buildPageTemplates(
     const exemplar = group[0];
     const exemplarZones = zonesByPath.get(normalizePath(exemplar.path));
     if (!exemplarZones) continue;
-    // The template Name shown in the admin dropdown. When the column
-    // carries a readable name ("System - No Banner") we use it directly;
-    // when Scorpion ships a numeric template ID we surface
-    // "Template <id>" via templateValueToDisplayName.
-    const templateName = exemplar.page.template
-      ? templateValueToDisplayName(exemplar.page.template)
-      : pageTitleByPath.get(exemplar.path) || exemplar.path || slug;
+    // The template name shown in the admin dropdown. When both the
+    // human-readable "Template Name" column and the underlying template
+    // ID are present we show "Name (id)" so two templates that happen to
+    // share a display name stay distinguishable in the dropdown. Falls
+    // back to name-only, then templateValueToDisplayName for ID-only
+    // rows, and finally to the page title / path so it's never blank.
+    const templateName = (() => {
+      const name = exemplar.page.templateName.trim();
+      const id = exemplar.page.template.trim();
+      if (name && id && name !== id) return `${name} (${id})`;
+      if (name) return name;
+      if (id) return templateValueToDisplayName(id);
+      return pageTitleByPath.get(exemplar.path) || exemplar.path || slug;
+    })();
     templates.push(
       buildPageTemplate(
         exemplarZones,

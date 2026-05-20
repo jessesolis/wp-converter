@@ -31,23 +31,51 @@ function parseSiteMapTable(
     );
   }
 
+  // Header → column index, so a new column (like "Template Name") works
+  // no matter where Scorpion places it. Falls back to the historical
+  // positions (path=0, title=1, meta title=2, meta description=3,
+  // template=4) when the header row is missing or unrecognized.
+  const headerCells = table.find("tr").first().find("th, td");
+  const headerIndex = new Map<string, number>();
+  headerCells.each((i, el) => {
+    headerIndex.set($(el).text().trim().toLowerCase(), i);
+  });
+  const idxOr = (labels: string[], fallback: number): number => {
+    for (const label of labels) {
+      const i = headerIndex.get(label);
+      if (i !== undefined) return i;
+    }
+    return fallback;
+  };
+  const pathIdx = idxOr(["path", "url"], 0);
+  const titleIdx = idxOr(["title", "page title"], 1);
+  const metaTitleIdx = idxOr(["meta title", "seo title"], 2);
+  const metaDescIdx = idxOr(["meta description", "description"], 3);
+  const templateIdx = idxOr(["template", "template id"], 4);
+  const templateNameIdx = headerIndex.get("template name");
+
   const pages: ScorpionPage[] = [];
   table.find("tr").each((index, tr) => {
     if (index === 0) return;
     const cells = $(tr).find("td");
     if (cells.length < 4) return;
 
-    const path = cells.eq(0).text().trim();
+    const cellText = (i: number): string =>
+      cells.length > i ? cells.eq(i).text().trim() : "";
+
+    const path = cellText(pathIdx);
     if (!path) return;
     if (isWpConverterPath(path)) return;
 
     pages.push({
       path,
-      title: cells.eq(1).text().trim(),
-      metaTitle: cells.eq(2).text().trim(),
-      metaDescription: cells.eq(3).text().trim(),
+      title: cellText(titleIdx),
+      metaTitle: cellText(metaTitleIdx),
+      metaDescription: cellText(metaDescIdx),
       canonical: new URL(path, siteUrl).toString(),
-      template: cells.length >= 5 ? cells.eq(4).text().trim() : "",
+      template: cellText(templateIdx),
+      templateName:
+        templateNameIdx !== undefined ? cellText(templateNameIdx) : "",
     });
   });
 
