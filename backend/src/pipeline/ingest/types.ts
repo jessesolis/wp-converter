@@ -19,6 +19,16 @@ export interface ScorpionPage {
   templateName: string;
 }
 
+// A single 301 source → destination pair, sourced from `#SiteRedirectTable`
+// on /wp-converter/. `from` is always a site-relative path with a leading
+// + trailing slash and no query string; original casing is preserved so
+// the Redirection plugin's URL matcher can honor it. `to` is verbatim so
+// absolute URLs and query strings on the target survive.
+export interface SiteRedirect {
+  from: string;
+  to: string;
+}
+
 export interface IngestResult {
   siteUrl: string;
   pages: ScorpionPage[];
@@ -27,4 +37,9 @@ export interface IngestResult {
   // `#SiteIconTable` on /wp-converter/. Empty if the site hasn't been
   // updated to expose the table yet — substitution becomes a no-op.
   iconMap: Map<string, string>;
+  // Site-level 301 rules from `#SiteRedirectTable`. Written to
+  // `redirects.csv` in the build output and ingested by the Redirection
+  // plugin via `wp redirection import …` in the wp:import step. Empty
+  // when the site hasn't been updated to expose the table yet.
+  redirects: SiteRedirect[];
 }

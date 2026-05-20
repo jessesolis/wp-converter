@@ -114,6 +114,7 @@ async function main() {
   const themeSrc = join(outputDir, "theme", THEME_SLUG);
   const mediaSrc = join(outputDir, "media");
   const wxrSrc = join(outputDir, "import.xml");
+  const redirectsSrc = join(outputDir, "redirects.csv");
 
   if (!existsSync(themeSrc) || !existsSync(wxrSrc)) {
     console.error(`Expected files missing in ${outputDir}`);
@@ -239,6 +240,71 @@ async function main() {
   console.log("\nInstalling contact-form-7 plugin…");
   wpCli(["plugin", "install", "contact-form-7", "--force"]);
   wpCli(["plugin", "activate", "contact-form-7"]);
+
+  // ---- 6c. Install + activate Redirection (only when there's a CSV) ----
+  // Redirection owns the 301 rules ingested from Scorpion's
+  // #SiteRedirectTable. The build emits redirects.csv only when the table
+  // had rows, so the install + import only runs when there's something
+  // to import. Admins edit afterwards at Tools → Redirection.
+  if (existsSync(redirectsSrc)) {
+    console.log("\nInstalling redirection plugin…");
+    wpCli(["plugin", "install", "redirection", "--force"]);
+    wpCli(["plugin", "activate", "redirection"]);
+
+    // Redirection's tables (wp_redirection_groups, wp_redirection_items)
+    // aren't created by `plugin activate` — the plugin normally installs
+    // them when an admin first visits Tools → Redirection. The CLI ships
+    // `database install` to do the same thing headlessly. Idempotent.
+    console.log("Installing redirection database schema…");
+    try {
+      wpCli(["redirection", "database", "install"]);
+    } catch (err) {
+      // Older Redirection versions don't ship the `database install`
+      // subcommand; fall back to invoking the installer class directly.
+      console.log("  database install subcommand unavailable, using fallback…");
+      wpCli([
+        "eval",
+        "if (class_exists('Red_Database')) { (new Red_Database())->apply_upgrade((new Red_Database())->get_latest_database_version()); }",
+      ]);
+    }
+
+    console.log("Copying redirects.csv into WP container…");
+    docker([
+      "exec",
+      WP_CONTAINER,
+      "rm",
+      "-f",
+      "/var/www/html/scorpion-redirects.csv",
+    ]);
+    docker([
+      "cp",
+      redirectsSrc,
+      `${WP_CONTAINER}:/var/www/html/scorpion-redirects.csv`,
+    ]);
+    docker([
+      "exec",
+      WP_CONTAINER,
+      "chown",
+      "www-data:www-data",
+      "/var/www/html/scorpion-redirects.csv",
+    ]);
+
+    console.log("Importing redirects via wp redirection import…");
+    // --format=csv is required: the plugin does NOT auto-detect format from
+    // the file extension and silently fails to JSON parsing without it.
+    // --group=1 targets the default "Redirections" group created by
+    // `database install`. The CLI defaults to the first available group
+    // when omitted but pinning is explicit and easier to debug.
+    wpCli([
+      "redirection",
+      "import",
+      "/var/www/html/scorpion-redirects.csv",
+      "--format=csv",
+      "--group=1",
+    ]);
+  } else {
+    console.log("\n(no redirects.csv — skipping Redirection plugin)");
+  }
 
   // ---- 7. Copy WXR into the container and import ----
   console.log("\nCopying WXR into container…");

@@ -7,6 +7,7 @@ import {
   type DownloadOutcome,
 } from "../download";
 import type { IngestResult } from "../ingest";
+import type { SiteRedirect } from "../ingest";
 import type {
   AssetInventory,
   FormAnalysis,
@@ -279,6 +280,17 @@ export async function buildWpPackage(
       postTemplateSlug,
     }),
   );
+
+  // Emit a CSV the Redirection plugin can ingest via `wp redirection import`.
+  // We only write the file when there's something to import — wp:import
+  // looks for the file's existence as the install/import trigger so it
+  // doesn't bother installing the plugin on sites with no redirects.
+  if (inputs.ingest.redirects.length > 0) {
+    await writeFile(
+      join(outputDir, "redirects.csv"),
+      buildRedirectsCsv(inputs.ingest.redirects),
+    );
+  }
   await writeFile(join(themeDir, "index.php"), buildIndexPhp());
 
   const iconMap = inputs.ingest.iconMap;
@@ -356,6 +368,7 @@ export async function buildWpPackage(
       mediaCount: mediaOutcome.okCount,
       failedMedia: mediaOutcome.failedCount,
       formVariantCount: inputs.formAnalysis.variants.length,
+      redirectCount: inputs.ingest.redirects.length,
       knownLimitations: limitations,
     }),
   );
@@ -491,4 +504,19 @@ function collectLimitations(
     );
   }
   return out;
+}
+
+// Redirection plugin's CSV import expects `source,target,regex,code` with
+// a header row. regex=0 forces literal URL matching; code=301 is the
+// permanent-redirect default. Fields that contain a comma or quote are
+// double-quoted per RFC 4180; embedded quotes are doubled.
+function buildRedirectsCsv(redirects: SiteRedirect[]): string {
+  const escape = (v: string): string =>
+    /[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+
+  const lines: string[] = ["source,target,regex,code"];
+  for (const { from, to } of redirects) {
+    lines.push(`${escape(from)},${escape(to)},0,301`);
+  }
+  return lines.join("\n") + "\n";
 }
