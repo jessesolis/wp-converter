@@ -4,6 +4,11 @@ export interface ScorpionPage {
   metaTitle: string;
   metaDescription: string;
   canonical: string;
+  // Scorpion's logical template grouping from #SiteMapListTable column 4
+  // (e.g. "Home", "Parent", "System", "System - No Banner", "System - Blog").
+  // Pages with the same value will share one WordPress page template.
+  // Empty string for rows where the column is missing.
+  template: string;
 }
 
 export interface IngestResult {

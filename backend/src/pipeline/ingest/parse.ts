@@ -47,6 +47,7 @@ function parseSiteMapTable(
       metaTitle: cells.eq(2).text().trim(),
       metaDescription: cells.eq(3).text().trim(),
       canonical: new URL(path, siteUrl).toString(),
+      template: cells.length >= 5 ? cells.eq(4).text().trim() : "",
     });
   });
 
